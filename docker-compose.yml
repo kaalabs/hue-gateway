@@ -1,0 +1,27 @@
+services:
+  hue-gateway:
+    build: .
+    environment:
+      PORT: "8000"
+      # Required to use /v1/* endpoints:
+      GATEWAY_AUTH_TOKENS: "dev-token"
+      GATEWAY_API_KEYS: "dev-key"
+      # Bridge config is optional until pairing/usage:
+      # HUE_BRIDGE_HOST: "192.168.1.2"
+      # HUE_APPLICATION_KEY: "..."
+    ports:
+      - "8000:8000"
+    volumes:
+      - hue_gateway_data:/data
+
+  api-docs:
+    image: nginx:alpine
+    depends_on:
+      - hue-gateway
+    ports:
+      - "8081:80"
+    volumes:
+      - ./docs:/usr/share/nginx/html:ro
+
+volumes:
+  hue_gateway_data:

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Hue Gateway API Docs</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@stoplight/elements@9.0.15/styles.min.css"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+      }
+      .topbar {
+        padding: 10px 14px;
+        border-bottom: 1px solid #e5e7eb;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+          "Apple Color Emoji", "Segoe UI Emoji";
+        font-size: 14px;
+        color: #111827;
+        background: #ffffff;
+      }
+      .topbar code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        font-size: 12px;
+      }
+      .hint {
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div>
+        Hue Gateway API Docs —
+        <span class="hint">
+          default spec: <code>./openapi.json</code> • override with
+          <code>?specUrl=...</code>
+        </span>
+      </div>
+      <div class="hint">
+        Auth: use <code>Authorization: Bearer &lt;token&gt;</code> or <code>X-API-Key</code> in the
+        “Try It” headers.
+      </div>
+    </div>
+
+    <elements-api id="api" router="hash" layout="sidebar"></elements-api>
+
+    <script src="https://cdn.jsdelivr.net/npm/@stoplight/elements@9.0.15/web-components.min.js"></script>
+    <script>
+      (function () {
+        const params = new URLSearchParams(window.location.search);
+        const specUrl = params.get("specUrl") || "./openapi.json";
+        const el = document.getElementById("api");
+        el.apiDescriptionUrl = specUrl;
+      })();
+    </script>
+  </body>
+</html>
+
