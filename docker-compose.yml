@@ -9,6 +9,11 @@ services:
       # Bridge config is optional until pairing/usage:
       # HUE_BRIDGE_HOST: "192.168.1.2"
       # HUE_APPLICATION_KEY: "..."
+    networks:
+      default: {}
+      remcochat-sandbox-net:
+        aliases:
+          - hue-gateway
     ports:
       - "8000:8000"
     volumes:
@@ -25,3 +30,8 @@ services:
 
 volumes:
   hue_gateway_data:
+
+networks:
+  remcochat-sandbox-net:
+    external: true
+    name: remcochat-sandbox-net
