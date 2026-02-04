@@ -17,6 +17,10 @@ class TokenBucketLimiter:
         self._buckets: dict[str, _Bucket] = {}
 
     def allow(self, key: str, cost: float = 1.0) -> bool:
+        allowed, _ = self.allow_with_retry_after_ms(key, cost=cost)
+        return allowed
+
+    def allow_with_retry_after_ms(self, key: str, *, cost: float = 1.0) -> tuple[bool, int]:
         now = time.monotonic()
         bucket = self._buckets.get(key)
         if bucket is None:
@@ -29,6 +33,11 @@ class TokenBucketLimiter:
 
         if bucket.tokens >= cost:
             bucket.tokens -= cost
-            return True
-        return False
+            return True, 0
 
+        # Compute an actionable retry hint.
+        deficit = max(0.0, float(cost) - bucket.tokens)
+        if self._rate <= 0.0:
+            return False, 0
+        retry_after_ms = int((deficit / self._rate) * 1000.0) + 1
+        return False, retry_after_ms

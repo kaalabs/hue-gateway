@@ -43,9 +43,11 @@ class AppState:
     db: Database
     bridge_host: str | None
     application_key: str | None
+    hue: HueClient
     dispatcher: ActionDispatcher
     cache: ResourceCache
     hub: EventHub
+    v2_bus: "V2EventBus"
     limiter: TokenBucketLimiter
     tasks: list[asyncio.Task]
 
@@ -88,6 +90,9 @@ async def lifespan(app: FastAPI):
     dispatcher = ActionDispatcher(db=db, hue=hue, config=config)
     cache = ResourceCache()
     hub = EventHub()
+    from hue_gateway.v2.event_bus import V2EventBus
+
+    v2_bus = V2EventBus(replay_maxlen=500)
     limiter = TokenBucketLimiter(rate_per_sec=config.rate_limit_rps, burst=config.rate_limit_burst)
 
     tasks: list[asyncio.Task] = []
@@ -97,12 +102,24 @@ async def lifespan(app: FastAPI):
         db=db,
         bridge_host=config.bridge_host,
         application_key=config.application_key,
+        hue=hue,
         dispatcher=dispatcher,
         cache=cache,
         hub=hub,
+        v2_bus=v2_bus,
         limiter=limiter,
         tasks=tasks,
     )
+
+    # Housekeeping for v2 idempotency records (no-op until v2 uses them).
+    from hue_gateway.v2.idempotency import cleanup_loop as _idempotency_cleanup_loop
+
+    tasks.append(asyncio.create_task(_idempotency_cleanup_loop(db=db)))
+
+    # Feed v2 SSE from the existing bridge ingestion hub.
+    from hue_gateway.v2.event_forwarder import forward_v1_to_v2_loop as _forward_v1_to_v2_loop
+
+    tasks.append(asyncio.create_task(_forward_v1_to_v2_loop(db=db, cache=cache, hub=hub, bus=v2_bus)))
 
     async def bootstrap_loop() -> None:
         started = False
@@ -148,7 +165,7 @@ async def lifespan(app: FastAPI):
         for task in tasks:
             try:
                 await task
-            except Exception:
+            except BaseException:
                 pass
         await hue.close()
         await db.close()
@@ -224,10 +241,18 @@ install_custom_openapi(app)
 
 logger = logging.getLogger("hue_gateway")
 
+# v2 routes are implemented in a dedicated module to keep /v1 stable.
+from hue_gateway.v2.router import router as v2_router  # noqa: E402
+
+app.include_router(v2_router)
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    # Normalize validation errors into the same envelope shape used by /v1/actions.
-    request_id = request.headers.get("x-request-id")
+    # Normalize validation errors into stable envelopes.
+    path = request.url.path or ""
+    is_v2 = path.startswith("/v2/")
+    request_id_header = request.headers.get("x-request-id")
+
     def _json_safe(value):
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
@@ -260,15 +285,84 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             message = "Request body must be a JSON object"
             details = {"error": str(err.get("msg", "invalid body"))}
             break
-    return JSONResponse(
+
+    if is_v2 and code == "invalid_request":
+        # Best-effort specialization into v2's more specific error codes.
+        # Prefer unknown_action when the body action is a string we don't recognize.
+        # (Pydantic's error type here isn't always a discriminator-specific tag error.)
+        try:
+            raw = await request.body()
+            parsed = json.loads(raw) if raw else None
+            body_action = parsed.get("action") if isinstance(parsed, dict) else None
+            if isinstance(body_action, str):
+                known_actions = {
+                    "bridge.set_host",
+                    "bridge.pair",
+                    "clipv2.request",
+                    "resolve.by_name",
+                    "light.set",
+                    "grouped_light.set",
+                    "scene.activate",
+                    "room.set",
+                    "zone.set",
+                    "inventory.snapshot",
+                    "actions.batch",
+                }
+                if body_action not in known_actions:
+                    code = "unknown_action"
+                    message = "Unknown action"
+        except Exception:
+            pass
+
+        if code == "invalid_request":
+            for err in exc.errors():
+                loc = err.get("loc")
+                if loc == ("body", "action"):
+                    code = "invalid_action"
+                    message = "Field 'action' must be a valid action string"
+                    break
+                if isinstance(loc, tuple) and len(loc) >= 2 and loc[0] == "body" and loc[1] == "args":
+                    code = "invalid_args"
+                    message = "Field 'args' must match the action schema"
+                    break
+
+    # v2 prefers echoing `action`/`requestId` from the body when parseable, but the header wins for correlation.
+    body_action: str | None = None
+    body_request_id: str | None = None
+    if is_v2 and code != "invalid_json":
+        try:
+            raw = await request.body()
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("action"), str):
+                        body_action = parsed["action"]
+                    if isinstance(parsed.get("requestId"), str):
+                        body_request_id = parsed["requestId"]
+        except Exception:
+            pass
+
+    response_request_id = request_id_header if request_id_header else body_request_id
+    response_action = body_action if is_v2 else ""
+    payload = (
         {
-            "requestId": request_id,
+            "requestId": response_request_id,
+            "action": response_action,
+            "ok": False,
+            "error": {"code": code, "message": message, "details": details},
+        }
+        if is_v2
+        else {
+            "requestId": request_id_header,
             "action": "",
             "ok": False,
             "error": {"code": code, "message": message, "details": details},
-        },
-        status_code=status.HTTP_400_BAD_REQUEST,
+        }
     )
+    headers = {}
+    if is_v2 and request_id_header:
+        headers["X-Request-Id"] = request_id_header
+    return JSONResponse(payload, status_code=status.HTTP_400_BAD_REQUEST, headers=headers)
 
 
 @app.middleware("http")

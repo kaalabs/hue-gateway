@@ -1,0 +1,1710 @@
+openapi: 3.1.0
+info:
+  title: Hue Gateway API
+  version: 2.0.0
+  description: |
+    Hue Gateway API v2.0 — OpenAPI skeleton.
+
+    Source of truth: `docs/change_requests/hue-gateway-api-architecture-0v91.md`.
+
+    Key v2 properties:
+    - `/v1/*` remains behavior/shape-frozen for generated-client compatibility.
+    - `/v2/*` tightens envelopes (incl. `401`/`429`), adds idempotency + verification contracts, resumable SSE, and normalized inventory.
+
+servers:
+  - url: http://localhost:8000
+    description: Local dev (example)
+
+tags:
+  - name: actions
+    description: Typed single-endpoint action API.
+  - name: events
+    description: Server-Sent Events (SSE) stream.
+
+x-error-code-registry:
+  - code: invalid_json
+    httpStatus: 400
+    retryable: false
+  - code: invalid_request
+    httpStatus: 400
+    retryable: false
+  - code: invalid_action
+    httpStatus: 400
+    retryable: false
+  - code: unknown_action
+    httpStatus: 400
+    retryable: false
+  - code: invalid_args
+    httpStatus: 400
+    retryable: false
+  - code: request_id_mismatch
+    httpStatus: 400
+    retryable: false
+  - code: invalid_idempotency_key
+    httpStatus: 400
+    retryable: false
+  - code: unauthorized
+    httpStatus: 401
+    retryable: false
+  - code: not_found
+    httpStatus: 404
+    retryable: false
+  - code: ambiguous_name
+    httpStatus: 409
+    retryable: false
+  - code: no_confident_match
+    httpStatus: 409
+    retryable: false
+  - code: link_button_not_pressed
+    httpStatus: 409
+    retryable: true
+  - code: idempotency_in_progress
+    httpStatus: 409
+    retryable: true
+  - code: idempotency_key_reuse_mismatch
+    httpStatus: 409
+    retryable: false
+  - code: bridge_unreachable
+    httpStatus: 424
+    retryable: true
+  - code: rate_limited
+    httpStatus: 429
+    retryable: true
+  - code: bridge_rate_limited
+    httpStatus: 429
+    retryable: true
+  - code: internal_error
+    httpStatus: 500
+    retryable: maybe
+  - code: bridge_error
+    httpStatus: 502
+    retryable: maybe
+
+paths:
+  /v2/actions:
+    post:
+      tags: [actions]
+      summary: Execute one action (v2)
+      description: |
+        Execute a single typed action.
+
+        Authentication (required): **one** of:
+        - `Authorization: Bearer <token>`
+        - `X-API-Key: <key>`
+
+        Correlation:
+        - `X-Request-Id` header is preferred.
+        - Body `requestId` is echoed in responses.
+        - If both are present they MUST match, otherwise `400 request_id_mismatch`.
+
+        Idempotency (replay-safe retries):
+        - Use `Idempotency-Key` header (preferred) and/or body `idempotencyKey`.
+        - Header wins; if both present and differ → `400 invalid_idempotency_key`.
+        - If the same key is in-flight → `409 idempotency_in_progress` with retry guidance.
+
+        v2 error model:
+        - 2xx responses always have `ok:true`.
+        - Non-2xx responses always have `ok:false` and use the canonical error envelope.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XRequestId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionRequestV2"
+            examples:
+              room_set:
+                summary: room.set (verify enabled)
+                value:
+                  requestId: chat-2026-02-04T17:20:00Z-0001
+                  action: room.set
+                  args:
+                    roomName: Woonkamer
+                    state:
+                      on: true
+                      brightness: 35
+                      colorTempK: 2400
+                    match:
+                      mode: normalized
+                      minConfidence: 0.85
+                      minGap: 0.15
+                    verify:
+                      mode: poll
+                      timeoutMs: 2000
+                      pollIntervalMs: 150
+              zone_set_dry_run:
+                summary: zone.set (dryRun impact only)
+                value:
+                  requestId: chat-2026-02-04T17:21:00Z-0001
+                  action: zone.set
+                  args:
+                    zoneName: Beneden
+                    state:
+                      on: false
+                    dryRun: true
+              inventory_snapshot_if_revision:
+                summary: inventory.snapshot (ifRevision)
+                value:
+                  requestId: chat-2026-02-04T17:22:00Z-0001
+                  action: inventory.snapshot
+                  args:
+                    ifRevision: 42
+              batch_continue_on_error:
+                summary: actions.batch (continueOnError=true)
+                value:
+                  requestId: chat-2026-02-04T17:23:00Z-0001
+                  action: actions.batch
+                  args:
+                    continueOnError: true
+                    actions:
+                      - action: resolve.by_name
+                        args:
+                          rtype: room
+                          name: Woonkamer
+                      - action: room.set
+                        args:
+                          roomName: Woonkamer
+                          state:
+                            on: false
+                          verify:
+                            mode: poll
+      responses:
+        "200":
+          description: Action executed successfully.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionSuccessResponseV2"
+              examples:
+                room_set_success:
+                  summary: room.set success (verified)
+                  value:
+                    requestId: chat-2026-02-04T17:20:00Z-0001
+                    action: room.set
+                    ok: true
+                    result:
+                      roomRid: 01234567-89ab-cdef-0123-456789abcdef
+                      groupedLightRid: 22222222-2222-2222-2222-222222222222
+                      requested:
+                        on: true
+                        brightness: 35
+                        colorTempK: 2400
+                      applied:
+                        on: true
+                        brightness: 35
+                        colorTempK: 2400
+                      observed:
+                        on: true
+                        brightness: 36
+                        colorTempK: 2390
+                      verified: true
+                      warnings: []
+                room_set_verify_failed:
+                  summary: room.set verify failure (verified=false)
+                  value:
+                    requestId: chat-2026-02-04T17:20:05Z-0002
+                    action: room.set
+                    ok: true
+                    result:
+                      roomRid: 01234567-89ab-cdef-0123-456789abcdef
+                      groupedLightRid: 22222222-2222-2222-2222-222222222222
+                      requested:
+                        on: true
+                        brightness: 10
+                      applied:
+                        on: true
+                        brightness: 10
+                      observed:
+                        on: true
+                        brightness: 42
+                      verified: false
+                      warnings:
+                        - code: verify_mismatch
+                          message: Observed state did not converge within tolerance before timeout
+                          details:
+                            field: brightness
+                            expected: 10
+                            observed: 42
+                            tolerance: 25
+                zone_set_dry_run_success:
+                  summary: zone.set dryRun (impact)
+                  value:
+                    requestId: chat-2026-02-04T17:21:00Z-0001
+                    action: zone.set
+                    ok: true
+                    result:
+                      dryRun: true
+                      zoneRid: 99999999-9999-9999-9999-999999999999
+                      groupedLightRid: 22222222-2222-2222-2222-222222222222
+                      impact:
+                        affectedRooms:
+                          - rid: 01234567-89ab-cdef-0123-456789abcdef
+                            name: Woonkamer
+                        affectedLightsCount: 12
+                inventory_snapshot_not_modified:
+                  summary: inventory.snapshot not modified
+                  value:
+                    requestId: chat-2026-02-04T17:22:00Z-0001
+                    action: inventory.snapshot
+                    ok: true
+                    result:
+                      notModified: true
+                      revision: 42
+        "207":
+          description: Partial success for actions.batch when continueOnError=true.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionsBatchSuccess"
+              examples:
+                batch_partial:
+                  summary: actions.batch partial (one step failed)
+                  value:
+                    requestId: chat-2026-02-04T17:23:00Z-0001
+                    action: actions.batch
+                    ok: true
+                    result:
+                      continueOnError: true
+                      steps:
+                        - index: 0
+                          action: resolve.by_name
+                          ok: true
+                          status: 200
+                          result:
+                            matched:
+                              rid: 01234567-89ab-cdef-0123-456789abcdef
+                              rtype: room
+                              name: Woonkamer
+                            confidence: 0.98
+                        - index: 1
+                          action: room.set
+                          ok: false
+                          status: 409
+                          error:
+                            code: ambiguous_name
+                            message: Multiple matches for room name
+                            details:
+                              candidates:
+                                - rid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                                  name: Woonkamer
+                                  confidence: 0.91
+                                - rid: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                                  name: Woonkamer (2)
+                                  confidence: 0.90
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "424":
+          $ref: "#/components/responses/FailedDependency"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v2/events/stream:
+    get:
+      tags: [events]
+      summary: Normalized Hue event stream (SSE) v2
+      description: |
+        Server-Sent Events (SSE) stream of normalized Hue change events.
+
+        Auth: required.
+
+        Resume:
+        - The gateway emits `id: <eventCursor>` on every event.
+        - Clients may send `Last-Event-ID: <eventCursor>` on reconnect.
+        - If the gateway cannot replay, it emits a `needs_resync` event.
+
+        Inventory coherence:
+        - Every event JSON payload includes `revision` (inventory revision).
+        - Clients SHOULD refresh `inventory.snapshot` when `revision` changes.
+
+        Event payload schema (JSON in `data:` frames) is documented in `components/schemas/SseEvent`.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XRequestId"
+        - $ref: "#/components/parameters/LastEventId"
+      responses:
+        "200":
+          description: SSE stream (text/event-stream).
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                sse_normal:
+                  summary: Example SSE frames
+                  value: |
+                    id: 123456
+                    event: resource.updated
+                    data: {"ts":"2026-02-04T17:17:48Z","type":"resource.updated","resource":{"rid":"<rid>","rtype":"light"},"revision":42,"eventId":123456,"data":{"on":{"on":true}}}
+
+                    id: 123457
+                    event: needs_resync
+                    data: {"ts":"2026-02-04T17:18:10Z","type":"needs_resync","resource":null,"revision":42,"eventId":123457,"data":{"reason":"replay_unavailable"}}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Static bearer token (LAN-only).
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Static API key (LAN-only).
+
+  headers:
+    XRequestId:
+      description: Correlation id echoed by the gateway when provided.
+      schema:
+        type: string
+        minLength: 1
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 0
+
+  parameters:
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: |
+        Correlation id. If body `requestId` is present, it MUST match this value.
+      schema:
+        type: string
+        minLength: 1
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Idempotency key for replay-safe retries. Header wins over body `idempotencyKey`.
+      schema:
+        type: string
+        minLength: 1
+    LastEventId:
+      name: Last-Event-ID
+      in: header
+      required: false
+      description: SSE resume cursor (event cursor).
+      schema:
+        type: string
+        minLength: 1
+
+  responses:
+    BadRequest:
+      description: Bad request.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            request_id_mismatch:
+              summary: request_id_mismatch
+              value:
+                ok: false
+                requestId: chat-2026-02-04T17:20:00Z-0001
+                error:
+                  code: request_id_mismatch
+                  message: X-Request-Id must match body requestId
+                  details:
+                    header: chat-...-0001
+                    body: chat-...-0002
+            invalid_idempotency_key:
+              summary: invalid_idempotency_key
+              value:
+                ok: false
+                action: room.set
+                requestId: chat-2026-02-04T17:20:00Z-0001
+                error:
+                  code: invalid_idempotency_key
+                  message: Idempotency-Key must match body idempotencyKey
+                  details: {}
+
+    Unauthorized:
+      description: Unauthorized.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            unauthorized:
+              summary: unauthorized
+              value:
+                ok: false
+                error:
+                  code: unauthorized
+                  message: Unauthorized
+                  details: {}
+
+    NotFound:
+      description: Not found.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            not_found:
+              summary: not_found
+              value:
+                ok: false
+                action: resolve.by_name
+                requestId: chat-2026-02-04T17:30:00Z-0001
+                error:
+                  code: not_found
+                  message: Resource not found
+                  details: {}
+
+    Conflict:
+      description: Conflict.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            ambiguous_name:
+              summary: ambiguous_name
+              value:
+                ok: false
+                action: light.set
+                requestId: chat-2026-02-04T17:31:00Z-0001
+                error:
+                  code: ambiguous_name
+                  message: Multiple matches for light name
+                  details:
+                    candidates:
+                      - rid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                        name: Kitchen
+                        confidence: 0.93
+                      - rid: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                        name: Kitchen (2)
+                        confidence: 0.92
+            idempotency_in_progress:
+              summary: idempotency_in_progress
+              value:
+                ok: false
+                action: room.set
+                requestId: chat-2026-02-04T17:32:00Z-0001
+                error:
+                  code: idempotency_in_progress
+                  message: Request with this idempotency key is already executing
+                  details:
+                    retryAfterMs: 250
+                    idempotencyKey: idem-abc123
+            batch_stop_on_error:
+              summary: actions.batch stop-on-error (partial audit in error.details)
+              value:
+                ok: false
+                action: actions.batch
+                requestId: chat-2026-02-04T17:40:00Z-0001
+                error:
+                  code: ambiguous_name
+                  message: Batch step failed
+                  details:
+                    failedStepIndex: 2
+                    steps:
+                      - index: 0
+                        action: resolve.by_name
+                        ok: true
+                        status: 200
+                      - index: 1
+                        action: clipv2.request
+                        ok: true
+                        status: 200
+                      - index: 2
+                        action: light.set
+                        ok: false
+                        status: 409
+                        error:
+                          code: ambiguous_name
+                          message: Multiple matches for light name
+                          details:
+                            candidates:
+                              - rid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                                name: Kitchen
+                                confidence: 0.93
+                              - rid: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                                name: Kitchen (2)
+                                confidence: 0.92
+
+    FailedDependency:
+      description: Bridge unreachable.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            bridge_unreachable:
+              summary: bridge_unreachable
+              value:
+                ok: false
+                action: clipv2.request
+                requestId: chat-2026-02-04T17:33:00Z-0001
+                error:
+                  code: bridge_unreachable
+                  message: Hue Bridge unreachable
+                  details: {}
+
+    TooManyRequests:
+      description: Rate limited.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            rate_limited:
+              summary: rate_limited (gateway)
+              value:
+                ok: false
+                action: room.set
+                requestId: chat-2026-02-04T17:34:00Z-0001
+                error:
+                  code: rate_limited
+                  message: Gateway rate limit exceeded
+                  details:
+                    retryAfterMs: 500
+            bridge_rate_limited:
+              summary: bridge_rate_limited (upstream)
+              value:
+                ok: false
+                action: grouped_light.set
+                requestId: chat-2026-02-04T17:34:01Z-0001
+                error:
+                  code: bridge_rate_limited
+                  message: Hue Bridge rate limit exceeded
+                  details:
+                    retryAfterMs: 1000
+
+    InternalServerError:
+      description: Internal server error.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            internal_error:
+              summary: internal_error
+              value:
+                ok: false
+                error:
+                  code: internal_error
+                  message: Internal error
+                  details: {}
+
+    BadGateway:
+      description: Bridge returned an error.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelopeV2"
+          examples:
+            bridge_error:
+              summary: bridge_error
+              value:
+                ok: false
+                action: clipv2.request
+                requestId: chat-2026-02-04T17:35:00Z-0001
+                error:
+                  code: bridge_error
+                  message: Hue Bridge returned an error
+                  details:
+                    status: 500
+
+  schemas:
+    ErrorEnvelopeV2:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        requestId:
+          description: Echoed requestId (if known).
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: "null"
+        action:
+          description: Echoed action name (if known).
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: "null"
+        ok:
+          type: boolean
+          const: false
+        error:
+          $ref: "#/components/schemas/ActionError"
+
+    ActionError:
+      type: object
+      additionalProperties: false
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          description: |
+            Machine-readable error code.
+
+            v2 code registry (seed; extensible):
+            - invalid_json (400, not retryable)
+            - invalid_request (400, not retryable)
+            - invalid_action (400, not retryable)
+            - unknown_action (400, not retryable)
+            - invalid_args (400, not retryable)
+            - request_id_mismatch (400, not retryable)
+            - invalid_idempotency_key (400, not retryable)
+            - unauthorized (401, not retryable)
+            - not_found (404, not retryable)
+            - ambiguous_name (409, not retryable)
+            - no_confident_match (409, not retryable)
+            - link_button_not_pressed (409, retryable after user action)
+            - idempotency_in_progress (409, retryable after wait)
+            - idempotency_key_reuse_mismatch (409, not retryable)
+            - bridge_unreachable (424, retryable with backoff)
+            - rate_limited (429, retryable after wait)
+            - bridge_rate_limited (429, retryable after wait)
+            - bridge_error (502, maybe retryable if safe/idempotent)
+            - internal_error (500, maybe retryable)
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    Warning:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    MatchOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [exact, case_insensitive, normalized, fuzzy]
+          description: |
+            Name matching mode.
+
+            Notes:
+            - `normalized` applies: `" ".join(value.strip().lower().split())` before matching.
+            - `fuzzy` returns a confidence score in [0,1]; higher is better.
+        minConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Minimum confidence required to auto-select a match.
+        minGap:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Minimum confidence gap between best and runner-up required to auto-select.
+        maxCandidates:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Max candidates to return in `ambiguous_name` / `no_confident_match` errors.
+
+    VerifyTolerances:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-field tolerance overrides.
+
+        Defaults (unless overridden):
+        - `light.*`: brightness ±5, colorTempK ±200K
+        - `grouped_light` / `room.set` / `zone.set`: brightness ±25, colorTempK ±800K
+        - `xy`: verify off by default unless explicitly requested
+      properties:
+        brightness:
+          type: number
+          minimum: 0
+          description: Absolute tolerance for brightness (percent points).
+        colorTempK:
+          type: integer
+          minimum: 0
+          description: Absolute tolerance for color temperature (Kelvin).
+
+    VerifyOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [none, poll, sse, poll_then_sse]
+          default: none
+        timeoutMs:
+          type: integer
+          minimum: 0
+          default: 2000
+        pollIntervalMs:
+          type: integer
+          minimum: 1
+          default: 150
+        tolerances:
+          $ref: "#/components/schemas/VerifyTolerances"
+
+    XYColor:
+      type: object
+      additionalProperties: false
+      required: [x, y]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+
+    LightState:
+      type: object
+      additionalProperties: false
+      description: |
+        Light state (normalized for tool calling).
+
+        - brightness: 0–100 (%)
+        - colorTempK: Kelvin
+        - xy: CIE xy color
+      properties:
+        on:
+          type: boolean
+        brightness:
+          type: number
+          minimum: 0
+          maximum: 100
+        colorTempK:
+          type: integer
+          minimum: 1
+        xy:
+          $ref: "#/components/schemas/XYColor"
+
+    Candidate:
+      type: object
+      additionalProperties: false
+      required: [rid, confidence]
+      properties:
+        rid:
+          type: string
+          minLength: 1
+        name:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    ResolveByNameMatched:
+      type: object
+      additionalProperties: false
+      required: [rid, rtype]
+      properties:
+        rid:
+          type: string
+        rtype:
+          type: string
+        name:
+          type: string
+
+    ClipV2Result:
+      type: object
+      additionalProperties: false
+      required: [status, body]
+      properties:
+        status:
+          type: integer
+        body:
+          description: Hue Bridge response body (usually JSON).
+
+    ActionRequestV2:
+      oneOf:
+        - $ref: "#/components/schemas/BridgeSetHostRequest"
+        - $ref: "#/components/schemas/BridgePairRequest"
+        - $ref: "#/components/schemas/ClipV2Request"
+        - $ref: "#/components/schemas/ResolveByNameRequest"
+        - $ref: "#/components/schemas/LightSetRequest"
+        - $ref: "#/components/schemas/GroupedLightSetRequest"
+        - $ref: "#/components/schemas/SceneActivateRequest"
+        - $ref: "#/components/schemas/RoomSetRequest"
+        - $ref: "#/components/schemas/ZoneSetRequest"
+        - $ref: "#/components/schemas/InventorySnapshotRequest"
+        - $ref: "#/components/schemas/ActionsBatchRequest"
+      discriminator:
+        propertyName: action
+        mapping:
+          bridge.set_host: "#/components/schemas/BridgeSetHostRequest"
+          bridge.pair: "#/components/schemas/BridgePairRequest"
+          clipv2.request: "#/components/schemas/ClipV2Request"
+          resolve.by_name: "#/components/schemas/ResolveByNameRequest"
+          light.set: "#/components/schemas/LightSetRequest"
+          grouped_light.set: "#/components/schemas/GroupedLightSetRequest"
+          scene.activate: "#/components/schemas/SceneActivateRequest"
+          room.set: "#/components/schemas/RoomSetRequest"
+          zone.set: "#/components/schemas/ZoneSetRequest"
+          inventory.snapshot: "#/components/schemas/InventorySnapshotRequest"
+          actions.batch: "#/components/schemas/ActionsBatchRequest"
+
+    ActionSuccessResponseV2:
+      oneOf:
+        - $ref: "#/components/schemas/BridgeSetHostSuccess"
+        - $ref: "#/components/schemas/BridgePairSuccess"
+        - $ref: "#/components/schemas/ClipV2Success"
+        - $ref: "#/components/schemas/ResolveByNameSuccess"
+        - $ref: "#/components/schemas/LightSetSuccess"
+        - $ref: "#/components/schemas/GroupedLightSetSuccess"
+        - $ref: "#/components/schemas/SceneActivateSuccess"
+        - $ref: "#/components/schemas/RoomSetSuccess"
+        - $ref: "#/components/schemas/ZoneSetSuccess"
+        - $ref: "#/components/schemas/InventorySnapshotSuccess"
+        - $ref: "#/components/schemas/ActionsBatchSuccess"
+      discriminator:
+        propertyName: action
+        mapping:
+          bridge.set_host: "#/components/schemas/BridgeSetHostSuccess"
+          bridge.pair: "#/components/schemas/BridgePairSuccess"
+          clipv2.request: "#/components/schemas/ClipV2Success"
+          resolve.by_name: "#/components/schemas/ResolveByNameSuccess"
+          light.set: "#/components/schemas/LightSetSuccess"
+          grouped_light.set: "#/components/schemas/GroupedLightSetSuccess"
+          scene.activate: "#/components/schemas/SceneActivateSuccess"
+          room.set: "#/components/schemas/RoomSetSuccess"
+          zone.set: "#/components/schemas/ZoneSetSuccess"
+          inventory.snapshot: "#/components/schemas/InventorySnapshotSuccess"
+          actions.batch: "#/components/schemas/ActionsBatchSuccess"
+
+    BridgeSetHostArgs:
+      type: object
+      additionalProperties: false
+      required: [bridgeHost]
+      properties:
+        bridgeHost:
+          type: string
+          minLength: 1
+          description: Hue Bridge IP/hostname on the LAN (no scheme/path).
+
+    BridgeSetHostRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: bridge.set_host
+        args:
+          $ref: "#/components/schemas/BridgeSetHostArgs"
+
+    BridgeSetHostResult:
+      type: object
+      additionalProperties: false
+      required: [bridgeHost, stored]
+      properties:
+        bridgeHost:
+          type: string
+        stored:
+          type: boolean
+
+    BridgeSetHostSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: bridge.set_host
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/BridgeSetHostResult"
+
+    BridgePairArgs:
+      type: object
+      additionalProperties: false
+      properties:
+        devicetype:
+          type: string
+          description: Bridge registration device type (free-form string).
+
+    BridgePairRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: bridge.pair
+        args:
+          $ref: "#/components/schemas/BridgePairArgs"
+
+    BridgePairResult:
+      type: object
+      additionalProperties: false
+      required: [applicationKey, stored]
+      properties:
+        applicationKey:
+          type: string
+        stored:
+          type: boolean
+
+    BridgePairSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: bridge.pair
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/BridgePairResult"
+
+    ClipV2RequestArgs:
+      type: object
+      additionalProperties: false
+      required: [method, path]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, DELETE, HEAD, OPTIONS]
+        path:
+          type: string
+          pattern: "^/clip/v2/.*"
+          description: Must start with `/clip/v2/` and must not contain scheme/host.
+        body:
+          description: Optional JSON body (object or array) for POST/PUT requests.
+        retry:
+          type: boolean
+          description: |
+            Best-effort retry hint. The gateway may still refuse retries for unsafe methods.
+
+    ClipV2Request:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: clipv2.request
+        args:
+          $ref: "#/components/schemas/ClipV2RequestArgs"
+
+    ClipV2Success:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: clipv2.request
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/ClipV2Result"
+
+    ResolveByNameArgs:
+      type: object
+      additionalProperties: false
+      required: [rtype, name]
+      properties:
+        rtype:
+          type: string
+        name:
+          type: string
+        match:
+          $ref: "#/components/schemas/MatchOptions"
+
+    ResolveByNameRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: resolve.by_name
+        args:
+          $ref: "#/components/schemas/ResolveByNameArgs"
+
+    ResolveByNameResult:
+      type: object
+      additionalProperties: false
+      required: [matched, confidence]
+      properties:
+        matched:
+          $ref: "#/components/schemas/ResolveByNameMatched"
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    ResolveByNameSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: resolve.by_name
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/ResolveByNameResult"
+
+    LightSetArgs:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        rid:
+          type: string
+        name:
+          type: string
+        match:
+          $ref: "#/components/schemas/MatchOptions"
+        state:
+          $ref: "#/components/schemas/LightState"
+        verify:
+          $ref: "#/components/schemas/VerifyOptions"
+
+    LightSetRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: light.set
+        args:
+          $ref: "#/components/schemas/LightSetArgs"
+
+    LightSetSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: light.set
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/SetStateResult"
+
+    GroupedLightSetArgs:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        rid:
+          type: string
+        name:
+          type: string
+        match:
+          $ref: "#/components/schemas/MatchOptions"
+        state:
+          $ref: "#/components/schemas/LightState"
+        verify:
+          $ref: "#/components/schemas/VerifyOptions"
+
+    GroupedLightSetRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: grouped_light.set
+        args:
+          $ref: "#/components/schemas/GroupedLightSetArgs"
+
+    GroupedLightSetSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: grouped_light.set
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/SetStateResult"
+
+    SceneActivateArgs:
+      type: object
+      additionalProperties: false
+      properties:
+        rid:
+          type: string
+        name:
+          type: string
+        match:
+          $ref: "#/components/schemas/MatchOptions"
+        verify:
+          $ref: "#/components/schemas/VerifyOptions"
+
+    SceneActivateRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: scene.activate
+        args:
+          $ref: "#/components/schemas/SceneActivateArgs"
+
+    SceneActivateResult:
+      type: object
+      additionalProperties: false
+      required: [status, body]
+      properties:
+        status:
+          type: integer
+        body:
+          description: Hue Bridge response body (usually JSON).
+
+    SceneActivateSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: scene.activate
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/SceneActivateResult"
+
+    SetStateResult:
+      type: object
+      additionalProperties: false
+      required: [requested, applied, verified, warnings]
+      properties:
+        requested:
+          $ref: "#/components/schemas/LightState"
+        applied:
+          $ref: "#/components/schemas/LightState"
+        observed:
+          $ref: "#/components/schemas/LightState"
+        verified:
+          type: boolean
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Warning"
+
+    RoomSetArgs:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        roomRid:
+          type: string
+        roomName:
+          type: string
+        match:
+          $ref: "#/components/schemas/MatchOptions"
+        state:
+          $ref: "#/components/schemas/LightState"
+        verify:
+          $ref: "#/components/schemas/VerifyOptions"
+
+    RoomSetRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: room.set
+        args:
+          $ref: "#/components/schemas/RoomSetArgs"
+
+    RoomSetResult:
+      allOf:
+        - $ref: "#/components/schemas/SetStateResult"
+        - type: object
+          additionalProperties: false
+          required: [roomRid, groupedLightRid]
+          properties:
+            roomRid:
+              type: string
+            groupedLightRid:
+              type: string
+
+    RoomSetSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: room.set
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/RoomSetResult"
+
+    ZoneImpact:
+      type: object
+      additionalProperties: false
+      properties:
+        affectedRooms:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [rid]
+            properties:
+              rid:
+                type: string
+              name:
+                type: string
+        affectedLightsCount:
+          type: integer
+          minimum: 0
+
+    ZoneSetArgs:
+      type: object
+      additionalProperties: false
+      properties:
+        zoneRid:
+          type: string
+        zoneName:
+          type: string
+        dryRun:
+          type: boolean
+          default: false
+        match:
+          $ref: "#/components/schemas/MatchOptions"
+        state:
+          $ref: "#/components/schemas/LightState"
+        verify:
+          $ref: "#/components/schemas/VerifyOptions"
+
+    ZoneSetRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: zone.set
+        args:
+          $ref: "#/components/schemas/ZoneSetArgs"
+
+    ZoneSetResultDryRun:
+      type: object
+      additionalProperties: false
+      required: [dryRun, zoneRid, groupedLightRid, impact]
+      properties:
+        dryRun:
+          const: true
+        zoneRid:
+          type: string
+        groupedLightRid:
+          type: string
+        impact:
+          $ref: "#/components/schemas/ZoneImpact"
+
+    ZoneSetResultApplied:
+      allOf:
+        - $ref: "#/components/schemas/SetStateResult"
+        - type: object
+          additionalProperties: false
+          required: [dryRun, zoneRid, groupedLightRid]
+          properties:
+            dryRun:
+              const: false
+            zoneRid:
+              type: string
+            groupedLightRid:
+              type: string
+            impact:
+              $ref: "#/components/schemas/ZoneImpact"
+
+    ZoneSetResult:
+      oneOf:
+        - $ref: "#/components/schemas/ZoneSetResultDryRun"
+        - $ref: "#/components/schemas/ZoneSetResultApplied"
+
+    ZoneSetSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: zone.set
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/ZoneSetResult"
+
+    InventorySnapshotArgs:
+      type: object
+      additionalProperties: false
+      properties:
+        ifRevision:
+          type: integer
+          minimum: 0
+
+    InventorySnapshotRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: inventory.snapshot
+        args:
+          $ref: "#/components/schemas/InventorySnapshotArgs"
+
+    InventorySnapshotResultNotModified:
+      type: object
+      additionalProperties: false
+      required: [notModified, revision]
+      properties:
+        notModified:
+          const: true
+        revision:
+          type: integer
+          minimum: 0
+
+    InventoryRoom:
+      type: object
+      additionalProperties: false
+      required: [rid, name, groupedLightRid]
+      properties:
+        rid:
+          type: string
+        name:
+          type: string
+        groupedLightRid:
+          type: string
+
+    InventoryZone:
+      type: object
+      additionalProperties: false
+      required: [rid, name, groupedLightRid]
+      properties:
+        rid:
+          type: string
+        name:
+          type: string
+        groupedLightRid:
+          type: string
+        roomRids:
+          type: array
+          items:
+            type: string
+
+    InventoryLight:
+      type: object
+      additionalProperties: false
+      required: [rid, name, ownerDeviceRid]
+      properties:
+        rid:
+          type: string
+        name:
+          type: string
+        ownerDeviceRid:
+          type: string
+        roomRid:
+          type: string
+
+    InventorySnapshotResultFull:
+      type: object
+      additionalProperties: false
+      required: [bridgeId, generatedAt, revision, stale, rooms, zones, lights]
+      properties:
+        notModified:
+          const: false
+        bridgeId:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        revision:
+          type: integer
+          minimum: 0
+        stale:
+          type: boolean
+        staleReason:
+          oneOf:
+            - type: string
+              enum: [not_configured, bridge_unreachable, sse_disconnected, cache_too_old, unknown]
+            - type: "null"
+        rooms:
+          type: array
+          items:
+            $ref: "#/components/schemas/InventoryRoom"
+        zones:
+          type: array
+          items:
+            $ref: "#/components/schemas/InventoryZone"
+        lights:
+          type: array
+          items:
+            $ref: "#/components/schemas/InventoryLight"
+
+    InventorySnapshotResult:
+      oneOf:
+        - $ref: "#/components/schemas/InventorySnapshotResultNotModified"
+        - $ref: "#/components/schemas/InventorySnapshotResultFull"
+
+    InventorySnapshotSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: inventory.snapshot
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/InventorySnapshotResult"
+
+    BatchStepRequest:
+      oneOf:
+        - $ref: "#/components/schemas/BridgeSetHostRequest"
+        - $ref: "#/components/schemas/BridgePairRequest"
+        - $ref: "#/components/schemas/ClipV2Request"
+        - $ref: "#/components/schemas/ResolveByNameRequest"
+        - $ref: "#/components/schemas/LightSetRequest"
+        - $ref: "#/components/schemas/GroupedLightSetRequest"
+        - $ref: "#/components/schemas/SceneActivateRequest"
+        - $ref: "#/components/schemas/RoomSetRequest"
+        - $ref: "#/components/schemas/ZoneSetRequest"
+        - $ref: "#/components/schemas/InventorySnapshotRequest"
+      discriminator:
+        propertyName: action
+
+    ActionsBatchArgs:
+      type: object
+      additionalProperties: false
+      required: [actions]
+      properties:
+        continueOnError:
+          type: boolean
+          default: false
+          description: If true, continue executing steps and return 207 with per-step results.
+        actions:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/BatchStepRequest"
+
+    ActionsBatchRequest:
+      type: object
+      additionalProperties: false
+      required: [action, args]
+      properties:
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        action:
+          const: actions.batch
+        args:
+          $ref: "#/components/schemas/ActionsBatchArgs"
+
+    BatchStepResult:
+      type: object
+      additionalProperties: false
+      required: [index, action, ok, status]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+        requestId:
+          type: string
+        idempotencyKey:
+          type: string
+        ok:
+          type: boolean
+        status:
+          type: integer
+        result:
+          description: Step result (when ok=true). Shape depends on action.
+        error:
+          $ref: "#/components/schemas/ActionError"
+
+    ActionsBatchResult:
+      type: object
+      additionalProperties: false
+      required: [continueOnError, steps]
+      properties:
+        continueOnError:
+          type: boolean
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchStepResult"
+
+    ActionsBatchSuccess:
+      type: object
+      additionalProperties: false
+      required: [action, ok, result]
+      properties:
+        requestId:
+          type: string
+        action:
+          const: actions.batch
+        ok:
+          type: boolean
+          const: true
+        result:
+          $ref: "#/components/schemas/ActionsBatchResult"
+
+    SseResourceRef:
+      description: |
+        Resource reference. `null` is used for events that are not tied to a single Hue resource (e.g. `needs_resync`).
+      oneOf:
+        - type: "null"
+        - type: object
+          additionalProperties: false
+          required: [rid, rtype]
+          properties:
+            rid:
+              type: string
+            rtype:
+              type: string
+
+    SseEvent:
+      type: object
+      additionalProperties: false
+      required: [ts, type, resource, revision]
+      properties:
+        ts:
+          type: string
+          format: date-time
+        type:
+          type: string
+          description: |
+            Event type (example: `resource.updated`, `resource.deleted`, `needs_resync`).
+        resource:
+          $ref: "#/components/schemas/SseResourceRef"
+        revision:
+          type: integer
+          minimum: 0
+          description: Inventory revision (refresh `inventory.snapshot` when it changes).
+        eventId:
+          type: integer
+          minimum: 0
+          description: Optional duplication of the SSE `id:` cursor.
+        data:
+          description: Event-specific payload; for lights/grouped_lights, include a useful delta when possible.

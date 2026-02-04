@@ -58,8 +58,16 @@ Operational:
 - Outbound TLS verification to the Hue Bridge is **disabled** (self-signed bridge certs); do not expose the gateway publicly.
 
 ## API
-- `POST /v1/actions` (auth required)
+- `POST /v1/actions` (auth required; shape-frozen)
 - `GET /v1/events/stream` (auth required; SSE)
+- `POST /v2/actions` (auth required; canonical envelopes, idempotency, verify)
+- `GET /v2/events/stream` (auth required; SSE with cursor resume via `Last-Event-ID`)
+
+### v2 E2E (real bridge)
+Run the gateway locally, then run:
+```sh
+make v2-e2e
+```
 
 ## Pairing tool (operator)
 Use the stand-alone pairing tool to set the bridge host and perform the button-press pairing loop:

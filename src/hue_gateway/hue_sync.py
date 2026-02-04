@@ -47,6 +47,7 @@ async def sync_core_resources(*, db: Database, hue: HueClient, cache: ResourceCa
 
     await db.commit()
     await db.rebuild_name_index()
+    await db.increment_setting_int("inventory_revision")
 
 
 async def resync_loop(*, db: Database, hue: HueClient, cache: ResourceCache, seconds: int) -> None:
@@ -122,6 +123,8 @@ async def _process_bridge_event_message(
             if event_type in {"delete", "remove"}:
                 await db.delete_resource(rid)
                 await db.commit()
+                if rtype in CORE_RESOURCE_TYPES:
+                    await db.increment_setting_int("inventory_revision")
                 cache.delete(rid=rid)
                 await hub.publish(
                     {
@@ -159,6 +162,8 @@ async def _process_bridge_event_message(
                     await db.commit()
 
             cache.upsert(rid=rid, rtype=rtype, name=name, data=resource)
+            if rtype in CORE_RESOURCE_TYPES:
+                await db.increment_setting_int("inventory_revision")
             await hub.publish(
                 {
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -168,4 +173,3 @@ async def _process_bridge_event_message(
                     "data": {},
                 }
             )
-

@@ -40,6 +40,29 @@ class Database:
         )
         await self.conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS idempotency (
+              credential_fingerprint TEXT NOT NULL,
+              idempotency_key TEXT NOT NULL,
+              action TEXT NOT NULL,
+              request_hash TEXT NOT NULL,
+              status TEXT NOT NULL,
+              response_status_code INTEGER,
+              response_json TEXT,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              expires_at INTEGER NOT NULL,
+              PRIMARY KEY (credential_fingerprint, idempotency_key)
+            );
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at
+            ON idempotency (expires_at);
+            """
+        )
+        await self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS resources (
               rid TEXT PRIMARY KEY,
               rtype TEXT NOT NULL,
@@ -80,6 +103,15 @@ class Database:
             return None
         return str(row[0])
 
+    async def get_setting_int(self, key: str, default: int = 0) -> int:
+        value = await self.get_setting(key)
+        if value is None:
+            return int(default)
+        try:
+            return int(value)
+        except ValueError:
+            return int(default)
+
     async def set_setting(self, key: str, value: str) -> None:
         now = int(time.time())
         await self.conn.execute(
@@ -91,6 +123,19 @@ class Database:
             (key, value, now),
         )
         await self.conn.commit()
+
+    async def increment_setting_int(self, key: str) -> int:
+        now = int(time.time())
+        await self.conn.execute(
+            """
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, '1', ?)
+            ON CONFLICT(key) DO UPDATE SET value=CAST(settings.value AS INTEGER) + 1, updated_at=excluded.updated_at
+            """,
+            (key, now),
+        )
+        await self.conn.commit()
+        return await self.get_setting_int(key, default=0)
 
     async def commit(self) -> None:
         await self.conn.commit()
@@ -164,6 +209,24 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [(str(name_norm), str(rid), str(name) if name is not None else None) for name_norm, rid, name in rows]
+
+    async def list_resources(self, *, rtype: str) -> list[dict[str, Any]]:
+        import json
+
+        async with self.conn.execute(
+            "SELECT json FROM resources WHERE rtype = ?",
+            (rtype,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out: list[dict[str, Any]] = []
+        for (json_text,) in rows:
+            try:
+                obj = json.loads(json_text)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+        return out
 
     async def rebuild_name_index(self) -> None:
         await self.conn.execute("DELETE FROM name_index")

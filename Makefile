@@ -1,5 +1,5 @@
 .PHONY: help up down restart build rebuild pull logs logs-follow ps shell health ready openapi \
-        db-path db-shell db-backup events docs-up docs-down docs-logs docs-open
+        db-path db-shell db-backup events v2-events v2-e2e docs-up docs-down docs-logs docs-open
 
 COMPOSE ?= docker compose
 SERVICE ?= hue-gateway
@@ -23,6 +23,8 @@ help:
 	@echo "  make db-shell      - open sqlite shell for /data/hue-gateway.db"
 	@echo "  make db-backup     - backup sqlite to ./backups/"
 	@echo "  make events        - curl SSE stream (Ctrl+C to stop)"
+	@echo "  make v2-events     - curl v2 SSE stream (Ctrl+C to stop)"
+	@echo "  make v2-e2e        - run basic v2 E2E flow (local server)"
 	@echo "  make docs-up       - start api-docs at http://localhost:8081"
 	@echo "  make docs-down     - stop api-docs"
 	@echo "  make docs-logs     - api-docs logs"
@@ -86,6 +88,12 @@ db-backup:
 
 events:
 	@curl -N -s -H 'Authorization: Bearer dev-token' http://localhost:$(PORT)/v1/events/stream
+
+v2-events:
+	@curl -N -s -H 'Authorization: Bearer dev-token' http://localhost:$(PORT)/v2/events/stream
+
+v2-e2e:
+	@bash scripts/v2-e2e.sh
 
 docs-up:
 	@$(MAKE) openapi

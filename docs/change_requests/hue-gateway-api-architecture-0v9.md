@@ -1,5 +1,7 @@
 # Change Request — Hue Gateway API (for RemcoChat “first-time-right” Hue control)
 
+> Note: superseded by `docs/change_requests/hue-gateway-api-architecture-0v91.md` (adds repo-grounded implementation snapshot + spec conversion notes).
+
 Status: **Draft**  
 Audience: **Hue Gateway API team** + RemcoChat maintainers  
 Date: **2026-02-04**  
