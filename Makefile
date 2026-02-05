@@ -1,9 +1,14 @@
-.PHONY: help up down restart build rebuild pull logs logs-follow ps shell health ready openapi \
-        db-path db-shell db-backup events v2-events v2-e2e docs-up docs-down docs-logs docs-open
+.PHONY: help up down restart build rebuild pull logs logs-follow ps shell health ready openapi openapi-fetch \
+        publish-spec docker-clean db-path db-shell db-backup events v2-events v2-e2e docs-up docs-down docs-logs docs-open
 
 COMPOSE ?= docker compose
 SERVICE ?= hue-gateway
 PORT ?= 8000
+PYTHON ?= python3
+
+ifneq ("$(wildcard .venv/bin/python)","")
+PYTHON := .venv/bin/python
+endif
 
 help:
 	@echo "Hue Gateway ops:"
@@ -19,7 +24,9 @@ help:
 	@echo "  make shell         - shell into container"
 	@echo "  make health        - curl /healthz"
 	@echo "  make ready         - curl /readyz"
-	@echo "  make openapi       - export openapi.json"
+	@echo "  make openapi       - generate openapi.json from code"
+	@echo "  make openapi-fetch - fetch openapi.json from running gateway"
+	@echo "  make publish-spec  - publish v2 spec artifacts into ./docs/"
 	@echo "  make db-shell      - open sqlite shell for /data/hue-gateway.db"
 	@echo "  make db-backup     - backup sqlite to ./backups/"
 	@echo "  make events        - curl SSE stream (Ctrl+C to stop)"
@@ -29,6 +36,7 @@ help:
 	@echo "  make docs-down     - stop api-docs"
 	@echo "  make docs-logs     - api-docs logs"
 	@echo "  make docs-open     - open docs URL (macOS)"
+	@echo "  make docker-clean  - remove hue-gateway docker containers/images (keeps volumes)"
 
 up:
 	$(COMPOSE) up -d --build
@@ -67,10 +75,25 @@ ready:
 	@curl -s http://localhost:$(PORT)/readyz && echo
 
 openapi:
-	@curl -s http://localhost:$(PORT)/openapi.json > openapi.json
+	@$(PYTHON) -c 'import json,sys; sys.path.insert(0,"src"); from hue_gateway.app import app; open("openapi.json","w").write(json.dumps(app.openapi(), indent=2, sort_keys=True, ensure_ascii=False))'
 	@mkdir -p docs
 	@cp openapi.json docs/openapi.json
-	@python3 -c "import json; json.load(open('openapi.json')); print('wrote openapi.json')"
+	@$(PYTHON) -c "import json; json.load(open('openapi.json')); print('wrote openapi.json')"
+
+openapi-fetch:
+	@curl -fsS http://localhost:$(PORT)/openapi.json > openapi.json
+	@mkdir -p docs
+	@cp openapi.json docs/openapi.json
+	@$(PYTHON) -c "import json; json.load(open('openapi.json')); print('wrote openapi.json')"
+
+publish-spec:
+	@$(MAKE) openapi
+	@mkdir -p docs/spec/v2
+	@cp openapi-v2.skeleton.yaml docs/spec/v2/openapi.yaml
+	@cp spec-v2.md docs/spec/v2/semantic.md
+
+docker-clean:
+	@bash scripts/docker-clean-hue-gateway.sh
 
 db-path:
 	@$(COMPOSE) exec -T $(SERVICE) sh -lc 'echo /data/hue-gateway.db'

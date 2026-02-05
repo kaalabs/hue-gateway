@@ -8,6 +8,9 @@ Implementation in progress. Sources of truth:
 - `spec.md`
 - `plan.md`
 - `task.md`
+- v2 spec baseline: `docs/change_requests/hue-gateway-api-architecture-0v91.md`
+- v2 OpenAPI contract: `openapi-v2.skeleton.yaml` (published: `docs/spec/v2/openapi.yaml`)
+- v2 semantic companion: `spec-v2.md` (published: `docs/spec/v2/semantic.md`)
 
 ## Local dev (Phase 0+)
 Requirements: Python 3.12+
@@ -35,7 +38,7 @@ docker compose up -d --build
 - Interactive API docs: `make docs-up` then open `http://localhost:8081`
 
 ## Configuration (env vars)
-Required for `/v1/*`:
+Required for `/v1/*` and `/v2/*`:
 - `GATEWAY_AUTH_TOKENS` (comma-separated Bearer tokens)
 - `GATEWAY_API_KEYS` (comma-separated API keys)
 

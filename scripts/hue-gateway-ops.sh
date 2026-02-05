@@ -29,6 +29,7 @@ Debug:
   health             GET /healthz
   ready              GET /readyz
   openapi            Export ./openapi.json from running gateway
+  publish-spec       Publish v2 spec artifacts into ./docs/
   docs-up            Start interactive API docs at http://localhost:8081
   docs-down          Stop interactive API docs
 
@@ -83,6 +84,9 @@ case "$cmd" in
     mkdir -p docs
     cp openapi.json docs/openapi.json
     python3 -c "import json; json.load(open('openapi.json')); print('wrote openapi.json')"
+    ;;
+  publish-spec)
+    bash -lc 'make publish-spec'
     ;;
   docs-up)
     curl -s "$(gateway_url)/openapi.json" > openapi.json

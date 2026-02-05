@@ -743,6 +743,7 @@ class V2Dispatcher:
             return ""
 
         rooms: list[dict[str, Any]] = []
+        device_to_room: dict[str, str] = {}
         for r in rooms_raw:
             rid = r.get("id")
             if not isinstance(rid, str):
@@ -752,22 +753,18 @@ class V2Dispatcher:
                 continue
             rooms.append({"rid": rid, "name": name_of(r), "groupedLightRid": grouped})
 
-        zones: list[dict[str, Any]] = []
-        for z in zones_raw:
-            rid = z.get("id")
-            if not isinstance(rid, str):
-                continue
-            grouped = self._extract_grouped_light_rid(z)
-            if not grouped:
-                continue
-            room_rids: list[str] = []
-            children = z.get("children")
+            # Best-effort: map room -> devices so we can derive light.roomRid.
+            children = r.get("children")
             if isinstance(children, list):
                 for c in children:
-                    if isinstance(c, dict) and isinstance(c.get("rid"), str) and c.get("rtype") == "room":
-                        room_rids.append(c["rid"])
-            zones.append({"rid": rid, "name": name_of(z), "groupedLightRid": grouped, "roomRids": room_rids or None})
+                    if not isinstance(c, dict):
+                        continue
+                    child_rid = c.get("rid") or c.get("id")
+                    child_rtype = c.get("rtype") or c.get("type")
+                    if child_rtype == "device" and isinstance(child_rid, str) and child_rid:
+                        device_to_room[child_rid] = rid
 
+        light_to_room: dict[str, str] = {}
         lights: list[dict[str, Any]] = []
         for l in lights_raw:
             rid = l.get("id")
@@ -777,7 +774,61 @@ class V2Dispatcher:
             owner_rid = ""
             if isinstance(owner, dict) and isinstance(owner.get("rid"), str):
                 owner_rid = owner["rid"]
-            lights.append({"rid": rid, "name": name_of(l), "ownerDeviceRid": owner_rid, "roomRid": None})
+            room_rid = device_to_room.get(owner_rid)
+            if room_rid:
+                light_to_room[rid] = room_rid
+            lights.append(
+                {
+                    "rid": rid,
+                    "name": name_of(l),
+                    "ownerDeviceRid": owner_rid,
+                    "roomRid": room_rid,
+                }
+            )
+
+        zones: list[dict[str, Any]] = []
+        for z in zones_raw:
+            rid = z.get("id")
+            if not isinstance(rid, str):
+                continue
+            grouped = self._extract_grouped_light_rid(z)
+            if not grouped:
+                continue
+
+            # Hue bridges may model zone children as rooms, lights, and/or devices.
+            room_rids: set[str] = set()
+            children = z.get("children")
+            if isinstance(children, list):
+                for c in children:
+                    if not isinstance(c, dict):
+                        continue
+                    child_rid = c.get("rid") or c.get("id")
+                    child_rtype = c.get("rtype") or c.get("type")
+                    if not isinstance(child_rid, str) or not child_rid or not isinstance(child_rtype, str):
+                        continue
+
+                    if child_rtype == "room":
+                        room_rids.add(child_rid)
+                        continue
+                    if child_rtype == "light":
+                        mapped = light_to_room.get(child_rid)
+                        if mapped:
+                            room_rids.add(mapped)
+                        continue
+                    if child_rtype == "device":
+                        mapped = device_to_room.get(child_rid)
+                        if mapped:
+                            room_rids.add(mapped)
+                        continue
+
+            zones.append(
+                {
+                    "rid": rid,
+                    "name": name_of(z),
+                    "groupedLightRid": grouped,
+                    "roomRids": sorted(room_rids) or None,
+                }
+            )
 
         bridge_id = "unknown"
         try:

@@ -1,9 +1,11 @@
 services:
   hue-gateway:
     build: .
+    labels:
+      com.rrk.project: "hue-gateway"
     environment:
       PORT: "8000"
-      # Required to use /v1/* endpoints:
+      # Required to use /v1/* and /v2/* endpoints:
       GATEWAY_AUTH_TOKENS: "dev-token"
       GATEWAY_API_KEYS: "dev-key"
       # Bridge config is optional until pairing/usage:

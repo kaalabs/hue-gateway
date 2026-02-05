@@ -173,15 +173,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Hue Gateway",
-    version="0.1.0",
+    version="2.0.0",
     description=(
         "# Hue Gateway API\n\n"
         "LAN-only Hue Bridge gateway for agentic tool calling.\n\n"
         "## Auth\n"
-        "All `/v1/*` endpoints require **one** of:\n\n"
+        "All `/v1/*` and `/v2/*` endpoints require **one** of:\n\n"
         "- `Authorization: Bearer <token>`\n"
         "- `X-API-Key: <key>`\n\n"
-        "If auth is missing/invalid: **401** `{ \"detail\": {\"error\":\"unauthorized\"} }`.\n\n"
+        "Auth errors:\n"
+        "- v1: **401** `{ \"detail\": {\"error\":\"unauthorized\"} }`\n"
+        "- v2: **401** canonical envelope `{ \"ok\": false, \"error\": {\"code\":\"unauthorized\", ...} }`\n\n"
         "## Key concepts\n"
         "- The Hue Bridge is on your LAN and is addressed by `HUE_BRIDGE_HOST` (stored in gateway DB via `bridge.set_host`).\n"
         "- The Hue application key is created by pressing the physical bridge button and calling `bridge.pair`.\n"
@@ -192,6 +194,8 @@ app = FastAPI(
         "- `GET /readyz` readiness (bridge host + app key + connectivity)\n"
         "- `POST /v1/actions` **single action endpoint** (typed request/response via `action` discriminator)\n"
         "- `GET /v1/events/stream` SSE stream of normalized events\n\n"
+        "- `POST /v2/actions` v2 action endpoint (canonical envelopes, idempotency, verify)\n"
+        "- `GET /v2/events/stream` v2 SSE stream (cursor resume via `Last-Event-ID`)\n\n"
         "## `/v1/actions` cookbook\n"
         "All requests use the same envelope:\n\n"
         "```json\n"

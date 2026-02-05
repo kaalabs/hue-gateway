@@ -1,1 +1,3946 @@
-{"openapi":"3.1.0","info":{"title":"Hue Gateway","description":"# Hue Gateway API\n\nLAN-only Hue Bridge gateway for agentic tool calling.\n\n## Auth\nAll `/v1/*` endpoints require **one** of:\n\n- `Authorization: Bearer <token>`\n- `X-API-Key: <key>`\n\nIf auth is missing/invalid: **401** `{ \"detail\": {\"error\":\"unauthorized\"} }`.\n\n## Key concepts\n- The Hue Bridge is on your LAN and is addressed by `HUE_BRIDGE_HOST` (stored in gateway DB via `bridge.set_host`).\n- The Hue application key is created by pressing the physical bridge button and calling `bridge.pair`.\n- Most Hue v2 operations are available via `clipv2.request` pass-through.\n- For convenience, the gateway also provides high-level actions (`light.set`, `grouped_light.set`, `scene.activate`).\n\n## Endpoints\n- `GET /healthz` liveness\n- `GET /readyz` readiness (bridge host + app key + connectivity)\n- `POST /v1/actions` **single action endpoint** (typed request/response via `action` discriminator)\n- `GET /v1/events/stream` SSE stream of normalized events\n\n## `/v1/actions` cookbook\nAll requests use the same envelope:\n\n```json\n{ \"requestId\": \"optional\", \"action\": \"...\", \"args\": { } }\n```\n\n### 1) Set the bridge host\n```json\n{ \"action\": \"bridge.set_host\", \"args\": { \"bridgeHost\": \"192.168.1.29\" } }\n```\n\n### 2) Pair (press the bridge button first)\n```json\n{ \"action\": \"bridge.pair\", \"args\": { \"devicetype\": \"hue-gateway#docker\" } }\n```\nIf the button was not pressed recently: **409** with `error.code=link_button_not_pressed`.\n\n### 3) List rooms (CLIP v2 pass-through)\n```json\n{ \"action\": \"clipv2.request\", \"args\": { \"method\": \"GET\", \"path\": \"/clip/v2/resource/room\" } }\n```\n\n### 4) Turn off a room/zone (grouped light)\nGet the grouped light rid from the room resource (`services[].rtype == \"grouped_light\"`).\n```json\n{ \"action\": \"grouped_light.set\", \"args\": { \"rid\": \"<grouped_light_rid>\", \"on\": false } }\n```\n\n### 5) Turn on a light by name\n```json\n{ \"action\": \"light.set\", \"args\": { \"name\": \"Kitchen\", \"on\": true, \"brightness\": 30, \"colorTempK\": 2700 } }\n```\nIf the name is ambiguous: **409** with `error.code=ambiguous_name` and a candidate list.\n\n### 6) Activate a scene\n```json\n{ \"action\": \"scene.activate\", \"args\": { \"name\": \"Relax\" } }\n```\n\n## Common errors\n- **400** invalid JSON / invalid args / unknown action (gateway returns a standard error envelope)\n- **409** link button not pressed, or ambiguous name resolution\n- **424** bridge unreachable (network/connectivity)\n- **429** gateway rate limited: `{ \"error\": \"rate_limited\" }`\n- **502** bridge returned a non-2xx error\n\n## Events (SSE)\n`GET /v1/events/stream` returns `text/event-stream`.\n\nClients should keep the connection open and reconnect on disconnect. The gateway may send keepalive\ncomment frames (`: keepalive`). Each event is emitted as a single `data: <json>` frame.\n","version":"0.1.0"},"paths":{"/healthz":{"get":{"tags":["meta"],"summary":"Liveness check","description":"Returns `ok=true` if the process is alive.","operationId":"healthz_healthz_get","responses":{"200":{"description":"Successful Response","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HealthResponse"}}}}}}},"/readyz":{"get":{"tags":["meta"],"summary":"Readiness check","description":"Returns `ready=true` when the gateway has a bridge host + application key and can reach the Hue Bridge.\n\nCommon not-ready reasons:\n- `missing_bridge_host`\n- `missing_application_key`\n- `bridge_unreachable`\n- `bridge_error`","operationId":"readyz_readyz_get","responses":{"200":{"description":"Successful Response","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ReadinessResponse"}}}}}}},"/v1/actions":{"post":{"tags":["actions"],"summary":"Single action endpoint","description":"Execute one action.\n\nThis endpoint is intentionally *generic* for LLM tool calling. The `action` string selects the operation, and `args` carries action-specific parameters.\n\nSupported actions (v1):\n\n- `bridge.set_host`: persist the Hue Bridge host/IP in the gateway.\n  - args: `{ \"bridgeHost\": \"192.168.1.29\" }`\n\n- `bridge.pair`: create/store a Hue application key (press the bridge button first).\n  - args: `{ \"devicetype\": \"hue-gateway#docker\" }` (optional)\n  - on success result: `{ \"applicationKey\": \"...\", \"stored\": true }`\n  - if button not pressed: `409` with `error.code=link_button_not_pressed`\n\n- `clipv2.request`: CLIP v2 pass-through for advanced use.\n  - args: `{ \"method\": \"GET\", \"path\": \"/clip/v2/resource/room\", \"body\": {..} }`\n  - safety: `path` must start with `/clip/v2/` and cannot override host.\n\n- `resolve.by_name`: fuzzy name → rid resolution using cached/indexed names.\n  - args: `{ \"rtype\": \"light\", \"name\": \"Kitchen\" }`\n  - may return `409` `ambiguous_name` with candidates.\n\n- `light.set`: control a light by `rid` or fuzzy `name`.\n  - args include any of: `on`, `brightness` (0-100), `colorTempK`, `xy`.\n\n- `grouped_light.set`: control a room/zone grouped light by `rid` or fuzzy `name`.\n\n- `scene.activate`: activate a scene by `rid` or fuzzy `name`.\n\nNotes:\n- Some actions depend on the Hue Bridge inventory and device capabilities.\n- Rate limiting: `429` returns `{ \"error\": \"rate_limited\" }`.","operationId":"actions_v1_actions_post","requestBody":{"content":{"application/json":{"schema":{"title":"Payload","oneOf":[{"$ref":"#/components/schemas/BridgeSetHostRequest"},{"$ref":"#/components/schemas/BridgePairRequest"},{"$ref":"#/components/schemas/ClipV2Request"},{"$ref":"#/components/schemas/ResolveByNameRequest"},{"$ref":"#/components/schemas/LightSetRequest"},{"$ref":"#/components/schemas/GroupedLightSetRequest"},{"$ref":"#/components/schemas/SceneActivateRequest"}],"discriminator":{"propertyName":"action","mapping":{"bridge.set_host":"#/components/schemas/BridgeSetHostRequest","bridge.pair":"#/components/schemas/BridgePairRequest","clipv2.request":"#/components/schemas/ClipV2Request","resolve.by_name":"#/components/schemas/ResolveByNameRequest","light.set":"#/components/schemas/LightSetRequest","grouped_light.set":"#/components/schemas/GroupedLightSetRequest","scene.activate":"#/components/schemas/SceneActivateRequest"}}},"examples":{"bridge_set_host":{"summary":"Set bridge host (store in gateway)","value":{"action":"bridge.set_host","args":{"bridgeHost":"192.168.1.29"}}},"bridge_pair":{"summary":"Pair after pressing the Hue Bridge button","value":{"action":"bridge.pair","args":{"devicetype":"hue-gateway#docker"}}},"list_rooms":{"summary":"List rooms via CLIP v2 pass-through","value":{"action":"clipv2.request","args":{"method":"GET","path":"/clip/v2/resource/room"}}},"turn_off_grouped_light":{"summary":"Turn off a room/zone grouped light (by rid)","value":{"action":"grouped_light.set","args":{"rid":"<rid>","on":false}}}}}},"required":true},"responses":{"200":{"description":"Action executed (or failed) using the standard action envelope.","content":{"application/json":{"schema":{"title":"Response Actions V1 Actions Post","oneOf":[{"oneOf":[{"$ref":"#/components/schemas/BridgeSetHostSuccess"},{"$ref":"#/components/schemas/BridgePairSuccess"},{"$ref":"#/components/schemas/ClipV2Success"},{"$ref":"#/components/schemas/ResolveByNameSuccess"},{"$ref":"#/components/schemas/LightSetSuccess"},{"$ref":"#/components/schemas/GroupedLightSetSuccess"},{"$ref":"#/components/schemas/SceneActivateSuccess"}],"discriminator":{"propertyName":"action","mapping":{"bridge.set_host":"#/components/schemas/BridgeSetHostSuccess","bridge.pair":"#/components/schemas/BridgePairSuccess","clipv2.request":"#/components/schemas/ClipV2Success","resolve.by_name":"#/components/schemas/ResolveByNameSuccess","light.set":"#/components/schemas/LightSetSuccess","grouped_light.set":"#/components/schemas/GroupedLightSetSuccess","scene.activate":"#/components/schemas/SceneActivateSuccess"}}},{"$ref":"#/components/schemas/ActionFailureResponse"}]},"examples":{"success_example":{"summary":"Successful action response","value":{"requestId":"req-123","action":"clipv2.request","ok":true,"result":{"status":200,"body":{"data":[]}}}},"failure_example":{"summary":"Failed action response","value":{"requestId":"req-123","action":"resolve.by_name","ok":false,"error":{"code":"ambiguous_name","message":"Multiple matches for light name","details":{"candidates":[{"rid":"...","name":"Kitchen","confidence":0.92}]}}}}}}}},"400":{"description":"Bad request / invalid JSON / unknown action / invalid args."},"401":{"description":"Unauthorized (missing/invalid gateway auth).","content":{"application/json":{"schema":{"$ref":"#/components/schemas/UnauthorizedResponse"}}}},"409":{"description":"Conflict (e.g., link button not pressed, ambiguous name)."},"424":{"description":"Failed dependency (bridge unreachable)."},"429":{"description":"Rate limited (gateway).","content":{"application/json":{"schema":{"$ref":"#/components/schemas/RateLimitedResponse"}}}},"502":{"description":"Bad gateway (bridge returned error)."},"500":{"description":"Internal server error."}},"security":[{"HTTPBearer":[]},{"APIKeyHeader":[]}]}},"/v1/events/stream":{"get":{"tags":["events"],"summary":"Normalized Hue event stream (SSE)","description":"Server-Sent Events (SSE) stream of normalized Hue change events.\n\nResponse is `text/event-stream` where each event is sent as a single `data: <json>` frame.\nThe gateway may also send `: keepalive` comment frames.\n\nClients should:\n- keep the HTTP connection open\n- reconnect on disconnect\n- treat event `data` as best-effort (shape may evolve)","operationId":"events_stream_v1_events_stream_get","responses":{"200":{"description":"SSE stream (text/event-stream).","content":{"text/event-stream":{"schema":{"type":"string"}}}},"401":{"description":"Unauthorized.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/UnauthorizedResponse"}}}}},"security":[{"HTTPBearer":[]},{"APIKeyHeader":[]}]}}},"components":{"schemas":{"ActionError":{"properties":{"code":{"type":"string","title":"Code","description":"Machine-readable error code."},"message":{"type":"string","title":"Message","description":"Human-readable error message."},"details":{"additionalProperties":true,"type":"object","title":"Details","description":"Structured extra error details for debugging/automation."}},"type":"object","required":["code","message"],"title":"ActionError"},"ActionFailureResponse":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"action":{"type":"string","title":"Action","description":"Echoed action name."},"ok":{"type":"boolean","const":false,"title":"Ok","description":"False for failed action execution.","default":false},"error":{"$ref":"#/components/schemas/ActionError"}},"type":"object","required":["action","error"],"title":"ActionFailureResponse"},"BridgePairArgs":{"properties":{"devicetype":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Devicetype","description":"Bridge registration device type (free-form string).","default":"hue-gateway#docker","examples":["hue-gateway#docker"]}},"type":"object","title":"BridgePairArgs"},"BridgePairRequest":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"bridge.pair","title":"Action","description":"Create/store a Hue application key (press button).","default":"bridge.pair"},"args":{"$ref":"#/components/schemas/BridgePairArgs"}},"type":"object","title":"BridgePairRequest"},"BridgePairResult":{"properties":{"applicationKey":{"type":"string","title":"Applicationkey"},"stored":{"type":"boolean","title":"Stored"}},"type":"object","required":["applicationKey","stored"],"title":"BridgePairResult"},"BridgePairSuccess":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"bridge.pair","title":"Action"},"result":{"$ref":"#/components/schemas/BridgePairResult"}},"type":"object","required":["action","result"],"title":"BridgePairSuccess"},"BridgeSetHostArgs":{"properties":{"bridgeHost":{"type":"string","title":"Bridgehost","description":"Hue Bridge IP/hostname on the LAN (no scheme/path).","examples":["192.168.1.29"]}},"type":"object","required":["bridgeHost"],"title":"BridgeSetHostArgs"},"BridgeSetHostRequest":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"bridge.set_host","title":"Action","description":"Persist bridge host/IP in the gateway.","default":"bridge.set_host"},"args":{"$ref":"#/components/schemas/BridgeSetHostArgs"}},"type":"object","required":["args"],"title":"BridgeSetHostRequest"},"BridgeSetHostResult":{"properties":{"bridgeHost":{"type":"string","title":"Bridgehost"},"stored":{"type":"boolean","title":"Stored"}},"type":"object","required":["bridgeHost","stored"],"title":"BridgeSetHostResult"},"BridgeSetHostSuccess":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"bridge.set_host","title":"Action"},"result":{"$ref":"#/components/schemas/BridgeSetHostResult"}},"type":"object","required":["action","result"],"title":"BridgeSetHostSuccess"},"ClipV2Request":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"clipv2.request","title":"Action","description":"CLIP v2 pass-through request.","default":"clipv2.request"},"args":{"$ref":"#/components/schemas/ClipV2RequestArgs"}},"type":"object","required":["args"],"title":"ClipV2Request"},"ClipV2RequestArgs":{"properties":{"method":{"type":"string","enum":["GET","POST","PUT","DELETE","HEAD","OPTIONS"],"title":"Method","description":"HTTP method to use against the Hue Bridge."},"path":{"type":"string","pattern":"^/clip/v2/.*","title":"Path","description":"Must start with `/clip/v2/` and must not contain scheme/host.","examples":["/clip/v2/resource/room"]},"body":{"anyOf":[{"additionalProperties":true,"type":"object"},{"items":{},"type":"array"},{"type":"null"}],"title":"Body","description":"Optional JSON body (object or array) for POST/PUT requests."}},"type":"object","required":["method","path"],"title":"ClipV2RequestArgs"},"ClipV2Result":{"properties":{"status":{"type":"integer","title":"Status","description":"HTTP status code returned by the Hue Bridge."},"body":{"title":"Body","description":"Hue Bridge response body (usually JSON)."}},"type":"object","required":["status","body"],"title":"ClipV2Result"},"ClipV2Success":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"clipv2.request","title":"Action"},"result":{"$ref":"#/components/schemas/ClipV2Result"}},"type":"object","required":["action","result"],"title":"ClipV2Success"},"GroupedLightSetArgs":{"properties":{"rid":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Rid","description":"Grouped light resource id."},"name":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Name","description":"Grouped light name (fuzzy)."},"on":{"anyOf":[{"type":"boolean"},{"type":"null"}],"title":"On","description":"Turn on/off."},"brightness":{"anyOf":[{"type":"number","maximum":100.0,"minimum":0.0},{"type":"null"}],"title":"Brightness","description":"Brightness percent 0–100."},"colorTempK":{"anyOf":[{"type":"integer","exclusiveMinimum":0.0},{"type":"null"}],"title":"Colortempk","description":"Color temperature in Kelvin."},"xy":{"anyOf":[{"$ref":"#/components/schemas/XYColor"},{"type":"null"}],"description":"Color in CIE xy."}},"type":"object","title":"GroupedLightSetArgs"},"GroupedLightSetRequest":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"grouped_light.set","title":"Action","description":"Control a grouped light by rid or name.","default":"grouped_light.set"},"args":{"$ref":"#/components/schemas/GroupedLightSetArgs"}},"type":"object","required":["args"],"title":"GroupedLightSetRequest"},"GroupedLightSetSuccess":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"grouped_light.set","title":"Action"},"result":{"$ref":"#/components/schemas/ClipV2Result"}},"type":"object","required":["action","result"],"title":"GroupedLightSetSuccess"},"HTTPValidationError":{"properties":{"detail":{"items":{"$ref":"#/components/schemas/ValidationError"},"type":"array","title":"Detail"}},"type":"object","title":"HTTPValidationError"},"HealthResponse":{"properties":{"ok":{"type":"boolean","title":"Ok","description":"Process is alive."}},"type":"object","required":["ok"],"title":"HealthResponse"},"LightSetArgs":{"properties":{"rid":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Rid","description":"Light resource id (preferred if known)."},"name":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Name","description":"Light name (fuzzy)."},"on":{"anyOf":[{"type":"boolean"},{"type":"null"}],"title":"On","description":"Turn on/off."},"brightness":{"anyOf":[{"type":"number","maximum":100.0,"minimum":0.0},{"type":"null"}],"title":"Brightness","description":"Brightness percent 0–100."},"colorTempK":{"anyOf":[{"type":"integer","exclusiveMinimum":0.0},{"type":"null"}],"title":"Colortempk","description":"Color temperature in Kelvin."},"xy":{"anyOf":[{"$ref":"#/components/schemas/XYColor"},{"type":"null"}],"description":"Color in CIE xy."}},"type":"object","title":"LightSetArgs"},"LightSetRequest":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"light.set","title":"Action","description":"Control a light by rid or fuzzy name.","default":"light.set"},"args":{"$ref":"#/components/schemas/LightSetArgs"}},"type":"object","required":["args"],"title":"LightSetRequest"},"LightSetSuccess":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"light.set","title":"Action"},"result":{"$ref":"#/components/schemas/ClipV2Result"}},"type":"object","required":["action","result"],"title":"LightSetSuccess"},"RateLimitedResponse":{"properties":{"error":{"type":"string","const":"rate_limited","title":"Error","description":"Gateway rate limit exceeded for the supplied credential.","default":"rate_limited"}},"type":"object","title":"RateLimitedResponse"},"ReadinessResponse":{"properties":{"ready":{"type":"boolean","title":"Ready","description":"True when the gateway can talk to the Hue Bridge."},"reason":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Reason","description":"When not ready, a short machine-readable reason (e.g. missing_bridge_host)."},"details":{"anyOf":[{},{"type":"null"}],"title":"Details","description":"Optional extra details for debugging; do not rely on this shape."}},"type":"object","required":["ready"],"title":"ReadinessResponse"},"ResolveByNameArgs":{"properties":{"rtype":{"type":"string","title":"Rtype","description":"Hue resource type (e.g., light, room, scene).","examples":["light"]},"name":{"type":"string","title":"Name","description":"Human name to resolve (fuzzy matching).","examples":["Kitchen"]}},"type":"object","required":["rtype","name"],"title":"ResolveByNameArgs"},"ResolveByNameMatched":{"properties":{"rid":{"type":"string","title":"Rid"},"rtype":{"type":"string","title":"Rtype"},"name":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Name"}},"type":"object","required":["rid","rtype"],"title":"ResolveByNameMatched"},"ResolveByNameRequest":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"resolve.by_name","title":"Action","description":"Resolve a resource rid by fuzzy name.","default":"resolve.by_name"},"args":{"$ref":"#/components/schemas/ResolveByNameArgs"}},"type":"object","required":["args"],"title":"ResolveByNameRequest"},"ResolveByNameResult":{"properties":{"matched":{"$ref":"#/components/schemas/ResolveByNameMatched"},"confidence":{"type":"number","title":"Confidence"}},"type":"object","required":["matched","confidence"],"title":"ResolveByNameResult"},"ResolveByNameSuccess":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"resolve.by_name","title":"Action"},"result":{"$ref":"#/components/schemas/ResolveByNameResult"}},"type":"object","required":["action","result"],"title":"ResolveByNameSuccess"},"SceneActivateArgs":{"properties":{"rid":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Rid","description":"Scene rid (preferred if known)."},"name":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Name","description":"Scene name (fuzzy)."}},"type":"object","title":"SceneActivateArgs"},"SceneActivateRequest":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Optional client-provided id used for correlating logs and responses.","examples":["req-123","chat-2026-01-27T12:00:00Z-0001"]},"action":{"type":"string","const":"scene.activate","title":"Action","description":"Activate a scene by rid or fuzzy name.","default":"scene.activate"},"args":{"$ref":"#/components/schemas/SceneActivateArgs"}},"type":"object","required":["args"],"title":"SceneActivateRequest"},"SceneActivateSuccess":{"properties":{"requestId":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Requestid","description":"Echoed from the request (if provided)."},"ok":{"type":"boolean","const":true,"title":"Ok","description":"True for successful action execution.","default":true},"action":{"type":"string","const":"scene.activate","title":"Action"},"result":{"$ref":"#/components/schemas/ClipV2Result"}},"type":"object","required":["action","result"],"title":"SceneActivateSuccess"},"UnauthorizedResponse":{"properties":{"detail":{"additionalProperties":true,"type":"object","title":"Detail","description":"FastAPI error envelope. For this API, typically `{ \"detail\": {\"error\":\"unauthorized\"} }`.","examples":[{"error":"unauthorized"}]}},"type":"object","required":["detail"],"title":"UnauthorizedResponse"},"ValidationError":{"properties":{"loc":{"items":{"anyOf":[{"type":"string"},{"type":"integer"}]},"type":"array","title":"Location"},"msg":{"type":"string","title":"Message"},"type":{"type":"string","title":"Error Type"}},"type":"object","required":["loc","msg","type"],"title":"ValidationError"},"XYColor":{"properties":{"x":{"type":"number","title":"X","description":"CIE xy x coordinate.","examples":[0.4]},"y":{"type":"number","title":"Y","description":"CIE xy y coordinate.","examples":[0.3]}},"type":"object","required":["x","y"],"title":"XYColor"}},"securitySchemes":{"HTTPBearer":{"type":"http","scheme":"bearer"},"APIKeyHeader":{"type":"apiKey","in":"header","name":"X-API-Key"}}}}
+{
+  "components": {
+    "schemas": {
+      "ActionError": {
+        "properties": {
+          "code": {
+            "description": "Machine-readable error code.",
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "description": "Structured extra error details for debugging/automation.",
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "description": "Human-readable error message.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ActionError",
+        "type": "object"
+      },
+      "ActionFailureResponse": {
+        "properties": {
+          "action": {
+            "description": "Echoed action name.",
+            "title": "Action",
+            "type": "string"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ActionError"
+          },
+          "ok": {
+            "const": false,
+            "default": false,
+            "description": "False for failed action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "error"
+        ],
+        "title": "ActionFailureResponse",
+        "type": "object"
+      },
+      "BridgePairArgs": {
+        "properties": {
+          "devicetype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "hue-gateway#docker",
+            "description": "Bridge registration device type (free-form string).",
+            "examples": [
+              "hue-gateway#docker"
+            ],
+            "title": "Devicetype"
+          }
+        },
+        "title": "BridgePairArgs",
+        "type": "object"
+      },
+      "BridgePairRequest": {
+        "properties": {
+          "action": {
+            "const": "bridge.pair",
+            "default": "bridge.pair",
+            "description": "Create/store a Hue application key (press button).",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/BridgePairArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "title": "BridgePairRequest",
+        "type": "object"
+      },
+      "BridgePairResult": {
+        "properties": {
+          "applicationKey": {
+            "title": "Applicationkey",
+            "type": "string"
+          },
+          "stored": {
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "applicationKey",
+          "stored"
+        ],
+        "title": "BridgePairResult",
+        "type": "object"
+      },
+      "BridgePairSuccess": {
+        "properties": {
+          "action": {
+            "const": "bridge.pair",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/BridgePairResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "BridgePairSuccess",
+        "type": "object"
+      },
+      "BridgeSetHostArgs": {
+        "properties": {
+          "bridgeHost": {
+            "description": "Hue Bridge IP/hostname on the LAN (no scheme/path).",
+            "examples": [
+              "192.168.1.29"
+            ],
+            "title": "Bridgehost",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bridgeHost"
+        ],
+        "title": "BridgeSetHostArgs",
+        "type": "object"
+      },
+      "BridgeSetHostRequest": {
+        "properties": {
+          "action": {
+            "const": "bridge.set_host",
+            "default": "bridge.set_host",
+            "description": "Persist bridge host/IP in the gateway.",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/BridgeSetHostArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "title": "BridgeSetHostRequest",
+        "type": "object"
+      },
+      "BridgeSetHostResult": {
+        "properties": {
+          "bridgeHost": {
+            "title": "Bridgehost",
+            "type": "string"
+          },
+          "stored": {
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bridgeHost",
+          "stored"
+        ],
+        "title": "BridgeSetHostResult",
+        "type": "object"
+      },
+      "BridgeSetHostSuccess": {
+        "properties": {
+          "action": {
+            "const": "bridge.set_host",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/BridgeSetHostResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "BridgeSetHostSuccess",
+        "type": "object"
+      },
+      "ClipV2Request": {
+        "properties": {
+          "action": {
+            "const": "clipv2.request",
+            "default": "clipv2.request",
+            "description": "CLIP v2 pass-through request.",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/ClipV2RequestArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "title": "ClipV2Request",
+        "type": "object"
+      },
+      "ClipV2RequestArgs": {
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional JSON body (object or array) for POST/PUT requests.",
+            "title": "Body"
+          },
+          "method": {
+            "description": "HTTP method to use against the Hue Bridge.",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "DELETE",
+              "HEAD",
+              "OPTIONS"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "path": {
+            "description": "Must start with `/clip/v2/` and must not contain scheme/host.",
+            "examples": [
+              "/clip/v2/resource/room"
+            ],
+            "pattern": "^/clip/v2/.*",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "path"
+        ],
+        "title": "ClipV2RequestArgs",
+        "type": "object"
+      },
+      "ClipV2Result": {
+        "properties": {
+          "body": {
+            "description": "Hue Bridge response body (usually JSON).",
+            "title": "Body"
+          },
+          "status": {
+            "description": "HTTP status code returned by the Hue Bridge.",
+            "title": "Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "body"
+        ],
+        "title": "ClipV2Result",
+        "type": "object"
+      },
+      "ClipV2Success": {
+        "properties": {
+          "action": {
+            "const": "clipv2.request",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ClipV2Result"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "ClipV2Success",
+        "type": "object"
+      },
+      "GroupedLightSetArgs": {
+        "properties": {
+          "brightness": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Brightness percent 0–100.",
+            "title": "Brightness"
+          },
+          "colorTempK": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Color temperature in Kelvin.",
+            "title": "Colortempk"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Grouped light name (fuzzy).",
+            "title": "Name"
+          },
+          "on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Turn on/off.",
+            "title": "On"
+          },
+          "rid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Grouped light resource id.",
+            "title": "Rid"
+          },
+          "xy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/XYColor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Color in CIE xy."
+          }
+        },
+        "title": "GroupedLightSetArgs",
+        "type": "object"
+      },
+      "GroupedLightSetRequest": {
+        "properties": {
+          "action": {
+            "const": "grouped_light.set",
+            "default": "grouped_light.set",
+            "description": "Control a grouped light by rid or name.",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/GroupedLightSetArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "title": "GroupedLightSetRequest",
+        "type": "object"
+      },
+      "GroupedLightSetSuccess": {
+        "properties": {
+          "action": {
+            "const": "grouped_light.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ClipV2Result"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "GroupedLightSetSuccess",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "ok": {
+            "description": "Process is alive.",
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "LightSetArgs": {
+        "properties": {
+          "brightness": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Brightness percent 0–100.",
+            "title": "Brightness"
+          },
+          "colorTempK": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Color temperature in Kelvin.",
+            "title": "Colortempk"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Light name (fuzzy).",
+            "title": "Name"
+          },
+          "on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Turn on/off.",
+            "title": "On"
+          },
+          "rid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Light resource id (preferred if known).",
+            "title": "Rid"
+          },
+          "xy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/XYColor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Color in CIE xy."
+          }
+        },
+        "title": "LightSetArgs",
+        "type": "object"
+      },
+      "LightSetRequest": {
+        "properties": {
+          "action": {
+            "const": "light.set",
+            "default": "light.set",
+            "description": "Control a light by rid or fuzzy name.",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/LightSetArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "title": "LightSetRequest",
+        "type": "object"
+      },
+      "LightSetSuccess": {
+        "properties": {
+          "action": {
+            "const": "light.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ClipV2Result"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "LightSetSuccess",
+        "type": "object"
+      },
+      "RateLimitedResponse": {
+        "properties": {
+          "error": {
+            "const": "rate_limited",
+            "default": "rate_limited",
+            "description": "Gateway rate limit exceeded for the supplied credential.",
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "title": "RateLimitedResponse",
+        "type": "object"
+      },
+      "ReadinessResponse": {
+        "properties": {
+          "details": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional extra details for debugging; do not rely on this shape.",
+            "title": "Details"
+          },
+          "ready": {
+            "description": "True when the gateway can talk to the Hue Bridge.",
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When not ready, a short machine-readable reason (e.g. missing_bridge_host).",
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "ready"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "ResolveByNameArgs": {
+        "properties": {
+          "name": {
+            "description": "Human name to resolve (fuzzy matching).",
+            "examples": [
+              "Kitchen"
+            ],
+            "title": "Name",
+            "type": "string"
+          },
+          "rtype": {
+            "description": "Hue resource type (e.g., light, room, scene).",
+            "examples": [
+              "light"
+            ],
+            "title": "Rtype",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rtype",
+          "name"
+        ],
+        "title": "ResolveByNameArgs",
+        "type": "object"
+      },
+      "ResolveByNameMatched": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rid": {
+            "title": "Rid",
+            "type": "string"
+          },
+          "rtype": {
+            "title": "Rtype",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rid",
+          "rtype"
+        ],
+        "title": "ResolveByNameMatched",
+        "type": "object"
+      },
+      "ResolveByNameRequest": {
+        "properties": {
+          "action": {
+            "const": "resolve.by_name",
+            "default": "resolve.by_name",
+            "description": "Resolve a resource rid by fuzzy name.",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/ResolveByNameArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "title": "ResolveByNameRequest",
+        "type": "object"
+      },
+      "ResolveByNameResult": {
+        "properties": {
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "matched": {
+            "$ref": "#/components/schemas/ResolveByNameMatched"
+          }
+        },
+        "required": [
+          "matched",
+          "confidence"
+        ],
+        "title": "ResolveByNameResult",
+        "type": "object"
+      },
+      "ResolveByNameSuccess": {
+        "properties": {
+          "action": {
+            "const": "resolve.by_name",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ResolveByNameResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "ResolveByNameSuccess",
+        "type": "object"
+      },
+      "SceneActivateArgs": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Scene name (fuzzy).",
+            "title": "Name"
+          },
+          "rid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Scene rid (preferred if known).",
+            "title": "Rid"
+          }
+        },
+        "title": "SceneActivateArgs",
+        "type": "object"
+      },
+      "SceneActivateRequest": {
+        "properties": {
+          "action": {
+            "const": "scene.activate",
+            "default": "scene.activate",
+            "description": "Activate a scene by rid or fuzzy name.",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/SceneActivateArgs"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional client-provided id used for correlating logs and responses.",
+            "examples": [
+              "req-123",
+              "chat-2026-01-27T12:00:00Z-0001"
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "title": "SceneActivateRequest",
+        "type": "object"
+      },
+      "SceneActivateSuccess": {
+        "properties": {
+          "action": {
+            "const": "scene.activate",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "description": "True for successful action execution.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Echoed from the request (if provided).",
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ClipV2Result"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "SceneActivateSuccess",
+        "type": "object"
+      },
+      "UnauthorizedResponse": {
+        "properties": {
+          "detail": {
+            "additionalProperties": true,
+            "description": "FastAPI error envelope. For this API, typically `{ \"detail\": {\"error\":\"unauthorized\"} }`.",
+            "examples": [
+              {
+                "error": "unauthorized"
+              }
+            ],
+            "title": "Detail",
+            "type": "object"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "UnauthorizedResponse",
+        "type": "object"
+      },
+      "V2ActionError": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "V2ActionError",
+        "type": "object"
+      },
+      "V2ActionsBatchArgs": {
+        "properties": {
+          "actions": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "bridge.pair": "#/components/schemas/V2BridgePairRequest",
+                  "bridge.set_host": "#/components/schemas/V2BridgeSetHostRequest",
+                  "clipv2.request": "#/components/schemas/V2ClipV2Request",
+                  "grouped_light.set": "#/components/schemas/V2GroupedLightSetRequest",
+                  "inventory.snapshot": "#/components/schemas/V2InventorySnapshotRequest",
+                  "light.set": "#/components/schemas/V2LightSetRequest",
+                  "resolve.by_name": "#/components/schemas/V2ResolveByNameRequest",
+                  "room.set": "#/components/schemas/V2RoomSetRequest",
+                  "scene.activate": "#/components/schemas/V2SceneActivateRequest",
+                  "zone.set": "#/components/schemas/V2ZoneSetRequest"
+                },
+                "propertyName": "action"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/V2BridgeSetHostRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2BridgePairRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2ClipV2Request"
+                },
+                {
+                  "$ref": "#/components/schemas/V2ResolveByNameRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2LightSetRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2GroupedLightSetRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2SceneActivateRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2RoomSetRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2ZoneSetRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/V2InventorySnapshotRequest"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Actions",
+            "type": "array"
+          },
+          "continueOnError": {
+            "default": false,
+            "title": "Continueonerror",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "title": "V2ActionsBatchArgs",
+        "type": "object"
+      },
+      "V2ActionsBatchRequest": {
+        "properties": {
+          "action": {
+            "const": "actions.batch",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2ActionsBatchArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2ActionsBatchRequest",
+        "type": "object"
+      },
+      "V2ActionsBatchResult": {
+        "properties": {
+          "continueOnError": {
+            "title": "Continueonerror",
+            "type": "boolean"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/V2BatchStepResult"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "continueOnError",
+          "steps"
+        ],
+        "title": "V2ActionsBatchResult",
+        "type": "object"
+      },
+      "V2ActionsBatchSuccess": {
+        "properties": {
+          "action": {
+            "const": "actions.batch",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2ActionsBatchResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2ActionsBatchSuccess",
+        "type": "object"
+      },
+      "V2BatchStepResult": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2ActionError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "index": {
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "action",
+          "ok",
+          "status"
+        ],
+        "title": "V2BatchStepResult",
+        "type": "object"
+      },
+      "V2BridgePairArgs": {
+        "properties": {
+          "devicetype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Devicetype"
+          }
+        },
+        "title": "V2BridgePairArgs",
+        "type": "object"
+      },
+      "V2BridgePairRequest": {
+        "properties": {
+          "action": {
+            "const": "bridge.pair",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2BridgePairArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "V2BridgePairRequest",
+        "type": "object"
+      },
+      "V2BridgePairResult": {
+        "properties": {
+          "applicationKey": {
+            "title": "Applicationkey",
+            "type": "string"
+          },
+          "stored": {
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "applicationKey",
+          "stored"
+        ],
+        "title": "V2BridgePairResult",
+        "type": "object"
+      },
+      "V2BridgePairSuccess": {
+        "properties": {
+          "action": {
+            "const": "bridge.pair",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2BridgePairResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2BridgePairSuccess",
+        "type": "object"
+      },
+      "V2BridgeSetHostArgs": {
+        "properties": {
+          "bridgeHost": {
+            "minLength": 1,
+            "title": "Bridgehost",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bridgeHost"
+        ],
+        "title": "V2BridgeSetHostArgs",
+        "type": "object"
+      },
+      "V2BridgeSetHostRequest": {
+        "properties": {
+          "action": {
+            "const": "bridge.set_host",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2BridgeSetHostArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2BridgeSetHostRequest",
+        "type": "object"
+      },
+      "V2BridgeSetHostResult": {
+        "properties": {
+          "bridgeHost": {
+            "title": "Bridgehost",
+            "type": "string"
+          },
+          "stored": {
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bridgeHost",
+          "stored"
+        ],
+        "title": "V2BridgeSetHostResult",
+        "type": "object"
+      },
+      "V2BridgeSetHostSuccess": {
+        "properties": {
+          "action": {
+            "const": "bridge.set_host",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2BridgeSetHostResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2BridgeSetHostSuccess",
+        "type": "object"
+      },
+      "V2ClipV2Request": {
+        "properties": {
+          "action": {
+            "const": "clipv2.request",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2ClipV2RequestArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2ClipV2Request",
+        "type": "object"
+      },
+      "V2ClipV2RequestArgs": {
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "method": {
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "DELETE",
+              "HEAD",
+              "OPTIONS"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "path": {
+            "pattern": "^/clip/v2/.*",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "path"
+        ],
+        "title": "V2ClipV2RequestArgs",
+        "type": "object"
+      },
+      "V2ClipV2Result": {
+        "properties": {
+          "body": {
+            "title": "Body"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "body"
+        ],
+        "title": "V2ClipV2Result",
+        "type": "object"
+      },
+      "V2ClipV2Success": {
+        "properties": {
+          "action": {
+            "const": "clipv2.request",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2ClipV2Result"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2ClipV2Success",
+        "type": "object"
+      },
+      "V2ErrorEnvelope": {
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "error": {
+            "$ref": "#/components/schemas/V2ActionError"
+          },
+          "ok": {
+            "const": false,
+            "default": false,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "V2ErrorEnvelope",
+        "type": "object"
+      },
+      "V2GroupedLightSetArgs": {
+        "properties": {
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2MatchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "verify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2VerifyOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "V2GroupedLightSetArgs",
+        "type": "object"
+      },
+      "V2GroupedLightSetRequest": {
+        "properties": {
+          "action": {
+            "const": "grouped_light.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2GroupedLightSetArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2GroupedLightSetRequest",
+        "type": "object"
+      },
+      "V2GroupedLightSetSuccess": {
+        "properties": {
+          "action": {
+            "const": "grouped_light.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2SetStateResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2GroupedLightSetSuccess",
+        "type": "object"
+      },
+      "V2InventoryLight": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ownerDeviceRid": {
+            "title": "Ownerdevicerid",
+            "type": "string"
+          },
+          "rid": {
+            "title": "Rid",
+            "type": "string"
+          },
+          "roomRid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roomrid"
+          }
+        },
+        "required": [
+          "rid",
+          "name",
+          "ownerDeviceRid"
+        ],
+        "title": "V2InventoryLight",
+        "type": "object"
+      },
+      "V2InventoryRoom": {
+        "properties": {
+          "groupedLightRid": {
+            "title": "Groupedlightrid",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rid": {
+            "title": "Rid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rid",
+          "name",
+          "groupedLightRid"
+        ],
+        "title": "V2InventoryRoom",
+        "type": "object"
+      },
+      "V2InventorySnapshotArgs": {
+        "properties": {
+          "ifRevision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ifrevision"
+          }
+        },
+        "title": "V2InventorySnapshotArgs",
+        "type": "object"
+      },
+      "V2InventorySnapshotFull": {
+        "properties": {
+          "bridgeId": {
+            "title": "Bridgeid",
+            "type": "string"
+          },
+          "generatedAt": {
+            "format": "date-time",
+            "title": "Generatedat",
+            "type": "string"
+          },
+          "lights": {
+            "items": {
+              "$ref": "#/components/schemas/V2InventoryLight"
+            },
+            "title": "Lights",
+            "type": "array"
+          },
+          "notModified": {
+            "const": false,
+            "default": false,
+            "title": "Notmodified",
+            "type": "boolean"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "rooms": {
+            "items": {
+              "$ref": "#/components/schemas/V2InventoryRoom"
+            },
+            "title": "Rooms",
+            "type": "array"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "staleReason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "not_configured",
+                  "bridge_unreachable",
+                  "sse_disconnected",
+                  "cache_too_old",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stalereason"
+          },
+          "zones": {
+            "items": {
+              "$ref": "#/components/schemas/V2InventoryZone"
+            },
+            "title": "Zones",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bridgeId",
+          "generatedAt",
+          "revision",
+          "stale",
+          "rooms",
+          "zones",
+          "lights"
+        ],
+        "title": "V2InventorySnapshotFull",
+        "type": "object"
+      },
+      "V2InventorySnapshotNotModified": {
+        "properties": {
+          "notModified": {
+            "const": true,
+            "default": true,
+            "title": "Notmodified",
+            "type": "boolean"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "V2InventorySnapshotNotModified",
+        "type": "object"
+      },
+      "V2InventorySnapshotRequest": {
+        "properties": {
+          "action": {
+            "const": "inventory.snapshot",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2InventorySnapshotArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "V2InventorySnapshotRequest",
+        "type": "object"
+      },
+      "V2InventorySnapshotSuccess": {
+        "properties": {
+          "action": {
+            "const": "inventory.snapshot",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "discriminator": {
+              "mapping": {
+                "False": "#/components/schemas/V2InventorySnapshotFull",
+                "True": "#/components/schemas/V2InventorySnapshotNotModified"
+              },
+              "propertyName": "notModified"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/V2InventorySnapshotNotModified"
+              },
+              {
+                "$ref": "#/components/schemas/V2InventorySnapshotFull"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2InventorySnapshotSuccess",
+        "type": "object"
+      },
+      "V2InventoryZone": {
+        "properties": {
+          "groupedLightRid": {
+            "title": "Groupedlightrid",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rid": {
+            "title": "Rid",
+            "type": "string"
+          },
+          "roomRids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roomrids"
+          }
+        },
+        "required": [
+          "rid",
+          "name",
+          "groupedLightRid"
+        ],
+        "title": "V2InventoryZone",
+        "type": "object"
+      },
+      "V2LightSetArgs": {
+        "properties": {
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2MatchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "verify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2VerifyOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "V2LightSetArgs",
+        "type": "object"
+      },
+      "V2LightSetRequest": {
+        "properties": {
+          "action": {
+            "const": "light.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2LightSetArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2LightSetRequest",
+        "type": "object"
+      },
+      "V2LightSetSuccess": {
+        "properties": {
+          "action": {
+            "const": "light.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2SetStateResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2LightSetSuccess",
+        "type": "object"
+      },
+      "V2LightState": {
+        "properties": {
+          "brightness": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brightness"
+          },
+          "colorTempK": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Colortempk"
+          },
+          "on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On"
+          },
+          "xy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2XY"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "V2LightState",
+        "type": "object"
+      },
+      "V2MatchOptions": {
+        "properties": {
+          "maxCandidates": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxcandidates"
+          },
+          "minConfidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minconfidence"
+          },
+          "minGap": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mingap"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exact",
+                  "case_insensitive",
+                  "normalized",
+                  "fuzzy"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          }
+        },
+        "title": "V2MatchOptions",
+        "type": "object"
+      },
+      "V2ResolveByNameArgs": {
+        "properties": {
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2MatchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rtype": {
+            "title": "Rtype",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rtype",
+          "name"
+        ],
+        "title": "V2ResolveByNameArgs",
+        "type": "object"
+      },
+      "V2ResolveByNameMatched": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rid": {
+            "title": "Rid",
+            "type": "string"
+          },
+          "rtype": {
+            "title": "Rtype",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rid",
+          "rtype"
+        ],
+        "title": "V2ResolveByNameMatched",
+        "type": "object"
+      },
+      "V2ResolveByNameRequest": {
+        "properties": {
+          "action": {
+            "const": "resolve.by_name",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2ResolveByNameArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2ResolveByNameRequest",
+        "type": "object"
+      },
+      "V2ResolveByNameResult": {
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "matched": {
+            "$ref": "#/components/schemas/V2ResolveByNameMatched"
+          }
+        },
+        "required": [
+          "matched",
+          "confidence"
+        ],
+        "title": "V2ResolveByNameResult",
+        "type": "object"
+      },
+      "V2ResolveByNameSuccess": {
+        "properties": {
+          "action": {
+            "const": "resolve.by_name",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2ResolveByNameResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2ResolveByNameSuccess",
+        "type": "object"
+      },
+      "V2RoomSetArgs": {
+        "properties": {
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2MatchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "roomName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roomname"
+          },
+          "roomRid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roomrid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "verify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2VerifyOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "V2RoomSetArgs",
+        "type": "object"
+      },
+      "V2RoomSetRequest": {
+        "properties": {
+          "action": {
+            "const": "room.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2RoomSetArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2RoomSetRequest",
+        "type": "object"
+      },
+      "V2RoomSetResult": {
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "groupedLightRid": {
+            "title": "Groupedlightrid",
+            "type": "string"
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2LightState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "roomRid": {
+            "title": "Roomrid",
+            "type": "string"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/V2Warning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requested",
+          "applied",
+          "verified",
+          "roomRid",
+          "groupedLightRid"
+        ],
+        "title": "V2RoomSetResult",
+        "type": "object"
+      },
+      "V2RoomSetSuccess": {
+        "properties": {
+          "action": {
+            "const": "room.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2RoomSetResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2RoomSetSuccess",
+        "type": "object"
+      },
+      "V2SceneActivateArgs": {
+        "properties": {
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2MatchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rid"
+          },
+          "verify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2VerifyOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "V2SceneActivateArgs",
+        "type": "object"
+      },
+      "V2SceneActivateRequest": {
+        "properties": {
+          "action": {
+            "const": "scene.activate",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2SceneActivateArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2SceneActivateRequest",
+        "type": "object"
+      },
+      "V2SceneActivateResult": {
+        "properties": {
+          "body": {
+            "title": "Body"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "body"
+        ],
+        "title": "V2SceneActivateResult",
+        "type": "object"
+      },
+      "V2SceneActivateSuccess": {
+        "properties": {
+          "action": {
+            "const": "scene.activate",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2SceneActivateResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2SceneActivateSuccess",
+        "type": "object"
+      },
+      "V2SetStateResult": {
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2LightState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/V2Warning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requested",
+          "applied",
+          "verified"
+        ],
+        "title": "V2SetStateResult",
+        "type": "object"
+      },
+      "V2VerifyOptions": {
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "poll",
+                  "sse",
+                  "poll_then_sse"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "pollIntervalMs": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pollintervalms"
+          },
+          "timeoutMs": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeoutms"
+          },
+          "tolerances": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tolerances"
+          }
+        },
+        "title": "V2VerifyOptions",
+        "type": "object"
+      },
+      "V2Warning": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "V2Warning",
+        "type": "object"
+      },
+      "V2XY": {
+        "properties": {
+          "x": {
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "V2XY",
+        "type": "object"
+      },
+      "V2ZoneSetArgs": {
+        "properties": {
+          "dryRun": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dryrun"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2MatchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "verify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2VerifyOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "zoneName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zonename"
+          },
+          "zoneRid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zonerid"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "V2ZoneSetArgs",
+        "type": "object"
+      },
+      "V2ZoneSetImpact": {
+        "properties": {
+          "groupedLightCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Groupedlightcount"
+          },
+          "lightCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lightcount"
+          },
+          "roomCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roomcount"
+          }
+        },
+        "title": "V2ZoneSetImpact",
+        "type": "object"
+      },
+      "V2ZoneSetRequest": {
+        "properties": {
+          "action": {
+            "const": "zone.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/V2ZoneSetArgs"
+          },
+          "idempotencyKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotencykey"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          }
+        },
+        "required": [
+          "action",
+          "args"
+        ],
+        "title": "V2ZoneSetRequest",
+        "type": "object"
+      },
+      "V2ZoneSetResult": {
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "dryRun": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dryrun"
+          },
+          "groupedLightRid": {
+            "title": "Groupedlightrid",
+            "type": "string"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2ZoneSetImpact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V2LightState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested": {
+            "$ref": "#/components/schemas/V2LightState"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/V2Warning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "zoneRid": {
+            "title": "Zonerid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requested",
+          "applied",
+          "verified",
+          "zoneRid",
+          "groupedLightRid"
+        ],
+        "title": "V2ZoneSetResult",
+        "type": "object"
+      },
+      "V2ZoneSetSuccess": {
+        "properties": {
+          "action": {
+            "const": "zone.set",
+            "title": "Action",
+            "type": "string"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "result": {
+            "$ref": "#/components/schemas/V2ZoneSetResult"
+          }
+        },
+        "required": [
+          "action",
+          "result"
+        ],
+        "title": "V2ZoneSetSuccess",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "XYColor": {
+        "properties": {
+          "x": {
+            "description": "CIE xy x coordinate.",
+            "examples": [
+              0.4
+            ],
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "description": "CIE xy y coordinate.",
+            "examples": [
+              0.3
+            ],
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "XYColor",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "APIKeyHeader": {
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      },
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "# Hue Gateway API\n\nLAN-only Hue Bridge gateway for agentic tool calling.\n\n## Auth\nAll `/v1/*` and `/v2/*` endpoints require **one** of:\n\n- `Authorization: Bearer <token>`\n- `X-API-Key: <key>`\n\nAuth errors:\n- v1: **401** `{ \"detail\": {\"error\":\"unauthorized\"} }`\n- v2: **401** canonical envelope `{ \"ok\": false, \"error\": {\"code\":\"unauthorized\", ...} }`\n\n## Key concepts\n- The Hue Bridge is on your LAN and is addressed by `HUE_BRIDGE_HOST` (stored in gateway DB via `bridge.set_host`).\n- The Hue application key is created by pressing the physical bridge button and calling `bridge.pair`.\n- Most Hue v2 operations are available via `clipv2.request` pass-through.\n- For convenience, the gateway also provides high-level actions (`light.set`, `grouped_light.set`, `scene.activate`).\n\n## Endpoints\n- `GET /healthz` liveness\n- `GET /readyz` readiness (bridge host + app key + connectivity)\n- `POST /v1/actions` **single action endpoint** (typed request/response via `action` discriminator)\n- `GET /v1/events/stream` SSE stream of normalized events\n\n- `POST /v2/actions` v2 action endpoint (canonical envelopes, idempotency, verify)\n- `GET /v2/events/stream` v2 SSE stream (cursor resume via `Last-Event-ID`)\n\n## `/v1/actions` cookbook\nAll requests use the same envelope:\n\n```json\n{ \"requestId\": \"optional\", \"action\": \"...\", \"args\": { } }\n```\n\n### 1) Set the bridge host\n```json\n{ \"action\": \"bridge.set_host\", \"args\": { \"bridgeHost\": \"192.168.1.29\" } }\n```\n\n### 2) Pair (press the bridge button first)\n```json\n{ \"action\": \"bridge.pair\", \"args\": { \"devicetype\": \"hue-gateway#docker\" } }\n```\nIf the button was not pressed recently: **409** with `error.code=link_button_not_pressed`.\n\n### 3) List rooms (CLIP v2 pass-through)\n```json\n{ \"action\": \"clipv2.request\", \"args\": { \"method\": \"GET\", \"path\": \"/clip/v2/resource/room\" } }\n```\n\n### 4) Turn off a room/zone (grouped light)\nGet the grouped light rid from the room resource (`services[].rtype == \"grouped_light\"`).\n```json\n{ \"action\": \"grouped_light.set\", \"args\": { \"rid\": \"<grouped_light_rid>\", \"on\": false } }\n```\n\n### 5) Turn on a light by name\n```json\n{ \"action\": \"light.set\", \"args\": { \"name\": \"Kitchen\", \"on\": true, \"brightness\": 30, \"colorTempK\": 2700 } }\n```\nIf the name is ambiguous: **409** with `error.code=ambiguous_name` and a candidate list.\n\n### 6) Activate a scene\n```json\n{ \"action\": \"scene.activate\", \"args\": { \"name\": \"Relax\" } }\n```\n\n## Common errors\n- **400** invalid JSON / invalid args / unknown action (gateway returns a standard error envelope)\n- **409** link button not pressed, or ambiguous name resolution\n- **424** bridge unreachable (network/connectivity)\n- **429** gateway rate limited: `{ \"error\": \"rate_limited\" }`\n- **502** bridge returned a non-2xx error\n\n## Events (SSE)\n`GET /v1/events/stream` returns `text/event-stream`.\n\nClients should keep the connection open and reconnect on disconnect. The gateway may send keepalive\ncomment frames (`: keepalive`). Each event is emitted as a single `data: <json>` frame.\n",
+    "title": "Hue Gateway",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "description": "Returns `ok=true` if the process is alive.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness check",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Returns `ready=true` when the gateway has a bridge host + application key and can reach the Hue Bridge.\n\nCommon not-ready reasons:\n- `missing_bridge_host`\n- `missing_application_key`\n- `bridge_unreachable`\n- `bridge_error`",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness check",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/v1/actions": {
+      "post": {
+        "description": "Execute one action.\n\nThis endpoint is intentionally *generic* for LLM tool calling. The `action` string selects the operation, and `args` carries action-specific parameters.\n\nSupported actions (v1):\n\n- `bridge.set_host`: persist the Hue Bridge host/IP in the gateway.\n  - args: `{ \"bridgeHost\": \"192.168.1.29\" }`\n\n- `bridge.pair`: create/store a Hue application key (press the bridge button first).\n  - args: `{ \"devicetype\": \"hue-gateway#docker\" }` (optional)\n  - on success result: `{ \"applicationKey\": \"...\", \"stored\": true }`\n  - if button not pressed: `409` with `error.code=link_button_not_pressed`\n\n- `clipv2.request`: CLIP v2 pass-through for advanced use.\n  - args: `{ \"method\": \"GET\", \"path\": \"/clip/v2/resource/room\", \"body\": {..} }`\n  - safety: `path` must start with `/clip/v2/` and cannot override host.\n\n- `resolve.by_name`: fuzzy name → rid resolution using cached/indexed names.\n  - args: `{ \"rtype\": \"light\", \"name\": \"Kitchen\" }`\n  - may return `409` `ambiguous_name` with candidates.\n\n- `light.set`: control a light by `rid` or fuzzy `name`.\n  - args include any of: `on`, `brightness` (0-100), `colorTempK`, `xy`.\n\n- `grouped_light.set`: control a room/zone grouped light by `rid` or fuzzy `name`.\n\n- `scene.activate`: activate a scene by `rid` or fuzzy `name`.\n\nNotes:\n- Some actions depend on the Hue Bridge inventory and device capabilities.\n- Rate limiting: `429` returns `{ \"error\": \"rate_limited\" }`.",
+        "operationId": "actions_v1_actions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "bridge_pair": {
+                  "summary": "Pair after pressing the Hue Bridge button",
+                  "value": {
+                    "action": "bridge.pair",
+                    "args": {
+                      "devicetype": "hue-gateway#docker"
+                    }
+                  }
+                },
+                "bridge_set_host": {
+                  "summary": "Set bridge host (store in gateway)",
+                  "value": {
+                    "action": "bridge.set_host",
+                    "args": {
+                      "bridgeHost": "192.168.1.29"
+                    }
+                  }
+                },
+                "list_rooms": {
+                  "summary": "List rooms via CLIP v2 pass-through",
+                  "value": {
+                    "action": "clipv2.request",
+                    "args": {
+                      "method": "GET",
+                      "path": "/clip/v2/resource/room"
+                    }
+                  }
+                },
+                "turn_off_grouped_light": {
+                  "summary": "Turn off a room/zone grouped light (by rid)",
+                  "value": {
+                    "action": "grouped_light.set",
+                    "args": {
+                      "on": false,
+                      "rid": "<rid>"
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "bridge.pair": "#/components/schemas/BridgePairRequest",
+                    "bridge.set_host": "#/components/schemas/BridgeSetHostRequest",
+                    "clipv2.request": "#/components/schemas/ClipV2Request",
+                    "grouped_light.set": "#/components/schemas/GroupedLightSetRequest",
+                    "light.set": "#/components/schemas/LightSetRequest",
+                    "resolve.by_name": "#/components/schemas/ResolveByNameRequest",
+                    "scene.activate": "#/components/schemas/SceneActivateRequest"
+                  },
+                  "propertyName": "action"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/BridgeSetHostRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BridgePairRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ClipV2Request"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ResolveByNameRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/LightSetRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/GroupedLightSetRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SceneActivateRequest"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "failure_example": {
+                    "summary": "Failed action response",
+                    "value": {
+                      "action": "resolve.by_name",
+                      "error": {
+                        "code": "ambiguous_name",
+                        "details": {
+                          "candidates": [
+                            {
+                              "confidence": 0.92,
+                              "name": "Kitchen",
+                              "rid": "..."
+                            }
+                          ]
+                        },
+                        "message": "Multiple matches for light name"
+                      },
+                      "ok": false,
+                      "requestId": "req-123"
+                    }
+                  },
+                  "success_example": {
+                    "summary": "Successful action response",
+                    "value": {
+                      "action": "clipv2.request",
+                      "ok": true,
+                      "requestId": "req-123",
+                      "result": {
+                        "body": {
+                          "data": []
+                        },
+                        "status": 200
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "oneOf": [
+                    {
+                      "discriminator": {
+                        "mapping": {
+                          "bridge.pair": "#/components/schemas/BridgePairSuccess",
+                          "bridge.set_host": "#/components/schemas/BridgeSetHostSuccess",
+                          "clipv2.request": "#/components/schemas/ClipV2Success",
+                          "grouped_light.set": "#/components/schemas/GroupedLightSetSuccess",
+                          "light.set": "#/components/schemas/LightSetSuccess",
+                          "resolve.by_name": "#/components/schemas/ResolveByNameSuccess",
+                          "scene.activate": "#/components/schemas/SceneActivateSuccess"
+                        },
+                        "propertyName": "action"
+                      },
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/BridgeSetHostSuccess"
+                        },
+                        {
+                          "$ref": "#/components/schemas/BridgePairSuccess"
+                        },
+                        {
+                          "$ref": "#/components/schemas/ClipV2Success"
+                        },
+                        {
+                          "$ref": "#/components/schemas/ResolveByNameSuccess"
+                        },
+                        {
+                          "$ref": "#/components/schemas/LightSetSuccess"
+                        },
+                        {
+                          "$ref": "#/components/schemas/GroupedLightSetSuccess"
+                        },
+                        {
+                          "$ref": "#/components/schemas/SceneActivateSuccess"
+                        }
+                      ]
+                    },
+                    {
+                      "$ref": "#/components/schemas/ActionFailureResponse"
+                    }
+                  ],
+                  "title": "Response Actions V1 Actions Post"
+                }
+              }
+            },
+            "description": "Action executed (or failed) using the standard action envelope."
+          },
+          "400": {
+            "description": "Bad request / invalid JSON / unknown action / invalid args."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponse"
+                }
+              }
+            },
+            "description": "Unauthorized (missing/invalid gateway auth)."
+          },
+          "409": {
+            "description": "Conflict (e.g., link button not pressed, ambiguous name)."
+          },
+          "424": {
+            "description": "Failed dependency (bridge unreachable)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitedResponse"
+                }
+              }
+            },
+            "description": "Rate limited (gateway)."
+          },
+          "500": {
+            "description": "Internal server error."
+          },
+          "502": {
+            "description": "Bad gateway (bridge returned error)."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Single action endpoint",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/v1/events/stream": {
+      "get": {
+        "description": "Server-Sent Events (SSE) stream of normalized Hue change events.\n\nResponse is `text/event-stream` where each event is sent as a single `data: <json>` frame.\nThe gateway may also send `: keepalive` comment frames.\n\nClients should:\n- keep the HTTP connection open\n- reconnect on disconnect\n- treat event `data` as best-effort (shape may evolve)",
+        "operationId": "events_stream_v1_events_stream_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "SSE stream (text/event-stream)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponse"
+                }
+              }
+            },
+            "description": "Unauthorized."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Normalized Hue event stream (SSE)",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/v2/actions": {
+      "post": {
+        "operationId": "v2_actions_v2_actions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "actions.batch": "#/components/schemas/V2ActionsBatchRequest",
+                    "bridge.pair": "#/components/schemas/V2BridgePairRequest",
+                    "bridge.set_host": "#/components/schemas/V2BridgeSetHostRequest",
+                    "clipv2.request": "#/components/schemas/V2ClipV2Request",
+                    "grouped_light.set": "#/components/schemas/V2GroupedLightSetRequest",
+                    "inventory.snapshot": "#/components/schemas/V2InventorySnapshotRequest",
+                    "light.set": "#/components/schemas/V2LightSetRequest",
+                    "resolve.by_name": "#/components/schemas/V2ResolveByNameRequest",
+                    "room.set": "#/components/schemas/V2RoomSetRequest",
+                    "scene.activate": "#/components/schemas/V2SceneActivateRequest",
+                    "zone.set": "#/components/schemas/V2ZoneSetRequest"
+                  },
+                  "propertyName": "action"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/V2BridgeSetHostRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2BridgePairRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2ClipV2Request"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2ResolveByNameRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2LightSetRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2GroupedLightSetRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2SceneActivateRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2RoomSetRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2ZoneSetRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2InventorySnapshotRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/V2ActionsBatchRequest"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "actions.batch": "#/components/schemas/V2ActionsBatchSuccess",
+                      "bridge.pair": "#/components/schemas/V2BridgePairSuccess",
+                      "bridge.set_host": "#/components/schemas/V2BridgeSetHostSuccess",
+                      "clipv2.request": "#/components/schemas/V2ClipV2Success",
+                      "grouped_light.set": "#/components/schemas/V2GroupedLightSetSuccess",
+                      "inventory.snapshot": "#/components/schemas/V2InventorySnapshotSuccess",
+                      "light.set": "#/components/schemas/V2LightSetSuccess",
+                      "resolve.by_name": "#/components/schemas/V2ResolveByNameSuccess",
+                      "room.set": "#/components/schemas/V2RoomSetSuccess",
+                      "scene.activate": "#/components/schemas/V2SceneActivateSuccess",
+                      "zone.set": "#/components/schemas/V2ZoneSetSuccess"
+                    },
+                    "propertyName": "action"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/V2BridgeSetHostSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2BridgePairSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ClipV2Success"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ResolveByNameSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2LightSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2GroupedLightSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2SceneActivateSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2RoomSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ZoneSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2InventorySnapshotSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ActionsBatchSuccess"
+                    }
+                  ],
+                  "title": "Response 200 V2 Actions V2 Actions Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "207": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "actions.batch": "#/components/schemas/V2ActionsBatchSuccess",
+                      "bridge.pair": "#/components/schemas/V2BridgePairSuccess",
+                      "bridge.set_host": "#/components/schemas/V2BridgeSetHostSuccess",
+                      "clipv2.request": "#/components/schemas/V2ClipV2Success",
+                      "grouped_light.set": "#/components/schemas/V2GroupedLightSetSuccess",
+                      "inventory.snapshot": "#/components/schemas/V2InventorySnapshotSuccess",
+                      "light.set": "#/components/schemas/V2LightSetSuccess",
+                      "resolve.by_name": "#/components/schemas/V2ResolveByNameSuccess",
+                      "room.set": "#/components/schemas/V2RoomSetSuccess",
+                      "scene.activate": "#/components/schemas/V2SceneActivateSuccess",
+                      "zone.set": "#/components/schemas/V2ZoneSetSuccess"
+                    },
+                    "propertyName": "action"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/V2BridgeSetHostSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2BridgePairSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ClipV2Success"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ResolveByNameSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2LightSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2GroupedLightSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2SceneActivateSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2RoomSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ZoneSetSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2InventorySnapshotSuccess"
+                    },
+                    {
+                      "$ref": "#/components/schemas/V2ActionsBatchSuccess"
+                    }
+                  ],
+                  "title": "Response 207 V2 Actions V2 Actions Post"
+                }
+              }
+            },
+            "description": "Multi-Status"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "424": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Failed Dependency"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Single action endpoint (v2)",
+        "tags": [
+          "v2"
+        ]
+      }
+    },
+    "/v2/events/stream": {
+      "get": {
+        "operationId": "v2_events_stream_v2_events_stream_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V2ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Event stream (v2, stub)",
+        "tags": [
+          "v2"
+        ]
+      }
+    }
+  }
+}

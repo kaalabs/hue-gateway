@@ -2,7 +2,11 @@
 set -euo pipefail
 
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8000}"
-TOKEN="${TOKEN:-dev-token}"
+DEFAULT_TOKEN="dev-token"
+if [[ -n "${GATEWAY_AUTH_TOKENS:-}" ]]; then
+  DEFAULT_TOKEN="${GATEWAY_AUTH_TOKENS%%,*}"
+fi
+TOKEN="${TOKEN:-$DEFAULT_TOKEN}"
 BRIDGE_HOST="${BRIDGE_HOST:-192.168.1.29}"
 ZONE_NAME="${ZONE_NAME:-Keuken}"
 
@@ -23,7 +27,14 @@ post() {
 echo "1) bridge.set_host (${BRIDGE_HOST})"
 post "{\"action\":\"bridge.set_host\",\"args\":{\"bridgeHost\":\"${BRIDGE_HOST}\"}}"
 
-ready_reason="$(curl -sS "${GATEWAY_URL}/readyz" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r.get("reason") or "")')"
+# Give the server a moment to pick up the stored host (bootstrap loop).
+ready_reason=""
+for i in {1..5}; do
+  ready_reason="$(curl -sS "${GATEWAY_URL}/readyz" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r.get("reason") or "")')"
+  [[ "${ready_reason}" != "missing_bridge_host" ]] && break
+  sleep 1
+done
+
 if [[ "${ready_reason}" == "missing_application_key" ]]; then
   echo "2) bridge.pair (PRESS THE BRIDGE BUTTON FIRST)"
   echo "   Retrying for ~60s until the bridge accepts the press..."
@@ -50,7 +61,20 @@ else
 fi
 
 echo "3) inventory.snapshot"
-post "{\"action\":\"inventory.snapshot\",\"args\":{}}"
+for i in {1..15}; do
+  out="$(curl -sS -X POST "${GATEWAY_URL}/v2/actions" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "X-Request-Id: e2e-$(date +%s)" \
+    -H "Content-Type: application/json" \
+    -d '{"action":"inventory.snapshot","args":{}}')"
+  echo "${out}" | json
+  rooms="$(echo "${out}" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(len((r.get("result") or {}).get("rooms") or []))')"
+  zones="$(echo "${out}" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(len((r.get("result") or {}).get("zones") or []))')"
+  if [[ "${rooms}" != "0" || "${zones}" != "0" ]]; then
+    break
+  fi
+  sleep 2
+done
 
 echo "4) resolve Keuken zone rid (rtype=zone name=${ZONE_NAME})"
 post "{\"action\":\"resolve.by_name\",\"args\":{\"rtype\":\"zone\",\"name\":\"${ZONE_NAME}\"}}"

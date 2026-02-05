@@ -1,11 +1,16 @@
 # Change Request — Hue Gateway API v2 (architecture → 2.0 spec scaffolding)
 
-Status: **Draft**  
+Status: **Frozen (v2.0 baseline)**  
 Version: **0v91**  
 Audience: **Hue Gateway API team** + RemcoChat maintainers  
-Date: **2026-02-04**  
+Date: **2026-02-05**  
 Prepared by: **RemcoChat team**  
 Revised by: **Codex** (repo + OpenAPI review)
+
+Published v2 artifacts:
+- `openapi-v2.skeleton.yaml` (OpenAPI 3.1 contract)
+- `spec-v2.md` (semantic companion)
+- `openapi.json` (FastAPI-generated OpenAPI for the running gateway; includes `/v1/*` + `/v2/*`)
 
 ## 0v91 change log (from 0v9)
 
@@ -701,6 +706,9 @@ This section locks the key design choices needed to proceed with a stable Hue Ga
      - zones: `{ rid, name, groupedLightRid, roomRids? }`
      - lights: `{ rid, name, ownerDeviceRid, roomRid? }`
      - metadata: `{ bridgeId, generatedAt, revision, stale, staleReason? }`  
+   - **Derivation rules (best-effort)**:
+     - `lights[].roomRid`: derived by mapping `light.owner.rid` (device) to the room whose `children[]` includes that device.
+     - `zones[].roomRids`: derived from `zone.children[]` (bridges may model zone children as `room`, `light`, and/or `device` refs) by mapping to room rids via the rule above.
    - **Conditional fetch**: support an `ifRevision` argument; if unchanged, return `{ notModified:true, revision }` (avoid large payloads without relying on HTTP caching).  
    - **`stale` definition**: `true` when the gateway cannot confirm freshness (e.g., bridge unreachable and cache age exceeds a threshold).  
    - **`staleReason`**: one of `not_configured|bridge_unreachable|sse_disconnected|cache_too_old|unknown`.
