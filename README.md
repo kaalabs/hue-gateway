@@ -1,48 +1,45 @@
 # Hue Gateway
 
-LAN-only, dockerized API server that controls Philips Hue via the Hue Bridge (Hue API v2 / CLIP v2). The API is designed for agentic “skill” use and exposes a single action endpoint.
+LAN-only, dockerized API server that controls Philips Hue via a Hue Bridge (Hue CLIP v2). The API is designed for agentic tool-calling and exposes a single action endpoint.
 
-## Status
-Implementation in progress. Sources of truth:
-- `research.md`
-- `spec.md`
-- `plan.md`
-- `task.md`
-- v2 spec baseline: `docs/change_requests/hue-gateway-api-architecture-0v91.md`
-- v2 OpenAPI contract: `openapi-v2.skeleton.yaml` (published: `docs/spec/v2/openapi.yaml`)
-- v2 semantic companion: `spec-v2.md` (published: `docs/spec/v2/semantic.md`)
+Current release: **v2.0.0**.
 
-## Local dev (Phase 0+)
-Requirements: Python 3.12+
+## API (v2)
+- `POST /v2/actions` (canonical envelopes, idempotency, verify)
+- `GET /v2/events/stream` (SSE with cursor resume via `Last-Event-ID`)
 
+Legacy compatibility:
+- `/v1/*` remains behavior/shape-frozen for generated-client compatibility (`/v1/actions`, `/v1/events/stream`).
+
+## Spec + docs
+- Static v2 OpenAPI (contract): `docs/spec/v2/openapi.yaml`
+- v2 semantic notes: `docs/spec/v2/semantic.md`
+- Architecture + locked decisions baseline: `docs/change_requests/hue-gateway-api-architecture-0v91.md`
+- Generated OpenAPI (implementation; includes `/v1/*` + `/v2/*`): `openapi.json` and `docs/openapi.json`
+
+Interactive docs (Stoplight Elements):
 ```sh
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-uvicorn hue_gateway.app:app --reload --port 8000
+make docs-up
+open "http://localhost:8081/?specUrl=./spec/v2/openapi.yaml"
 ```
 
-Health:
-```sh
-curl -s http://localhost:8000/healthz
-```
-
-## Docker
+## Quick start (Docker)
 ```sh
 docker compose up -d --build
 ```
 
-## Ops helpers
-- Make targets: `make help`
-- Script (no executable bit required): `bash scripts/hue-gateway-ops.sh help`
-- Interactive API docs: `make docs-up` then open `http://localhost:8081`
+Health / readiness:
+```sh
+curl -s http://localhost:8000/healthz
+curl -s http://localhost:8000/readyz
+```
 
 ## Configuration (env vars)
 Required for `/v1/*` and `/v2/*`:
 - `GATEWAY_AUTH_TOKENS` (comma-separated Bearer tokens)
 - `GATEWAY_API_KEYS` (comma-separated API keys)
 
-Required to talk to the Hue Bridge:
+Bridge config (either env or one-time pairing):
 - `HUE_BRIDGE_HOST` (IP/hostname on the LAN)
 - `HUE_APPLICATION_KEY` (stored in `/data/hue-gateway.db` after pairing if not supplied via env)
 
@@ -56,65 +53,63 @@ Operational:
 - `RETRY_MAX_ATTEMPTS` (default `3`)
 - `RETRY_BASE_DELAY_MS` (default `200`)
 
-## Security notes
-- This project is **LAN-only** by design.
-- Outbound TLS verification to the Hue Bridge is **disabled** (self-signed bridge certs); do not expose the gateway publicly.
-
-## API
-- `POST /v1/actions` (auth required; shape-frozen)
-- `GET /v1/events/stream` (auth required; SSE)
-- `POST /v2/actions` (auth required; canonical envelopes, idempotency, verify)
-- `GET /v2/events/stream` (auth required; SSE with cursor resume via `Last-Event-ID`)
-
-### v2 E2E (real bridge)
-Run the gateway locally, then run:
-```sh
-make v2-e2e
-```
-
-## Pairing tool (operator)
-Use the stand-alone pairing tool to set the bridge host and perform the button-press pairing loop:
-
-```sh
-hue-gateway-pair --gateway-url http://localhost:8000 \
-  --token dev-token \
-  --bridge-host 192.168.1.2 \
-  --verify
-```
-
-## Discovery tool (operator)
-`hue-gateway-discover` tries SSDP/UPnP first (fast), then optionally mDNS/zeroconf (requires `zeroconf` extra), and can optionally fall back to a CIDR scan of `http://<ip>/description.xml` (slow).
-
-Examples:
-```sh
-hue-gateway-discover --enrich
-hue-gateway-discover --scan-cidr 192.168.1.0/24 --enrich
-```
-
-### Auth headers
+## Pairing (v2)
+Auth headers:
 - `Authorization: Bearer <token>` OR
 - `X-API-Key: <key>`
 
-### Pairing (press the bridge button first)
+1) Set bridge host:
 ```sh
-curl -s -X POST http://localhost:8000/v1/actions \
+curl -s -X POST http://localhost:8000/v2/actions \
+  -H 'Authorization: Bearer dev-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"bridge.set_host","args":{"bridgeHost":"192.168.1.2"}}'
+```
+
+2) Press the physical Hue Bridge button, then pair:
+```sh
+curl -s -X POST http://localhost:8000/v2/actions \
   -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
   -d '{"action":"bridge.pair","args":{"devicetype":"hue-gateway#docker"}}'
 ```
 
-### Pass-through CLIP v2 request
+## v2 E2E (real bridge)
+Run against a local gateway:
 ```sh
-curl -s -X POST http://localhost:8000/v1/actions \
-  -H 'Authorization: Bearer dev-token' \
-  -H 'Content-Type: application/json' \
-  -d '{"action":"clipv2.request","args":{"method":"GET","path":"/clip/v2/resource/light"}}'
+make v2-e2e
 ```
 
-### High-level light control (name-based)
+Useful overrides:
+- `GATEWAY_URL` (default `http://localhost:8000`)
+- `TOKEN` (default: first token in `GATEWAY_AUTH_TOKENS` or `dev-token`)
+- `BRIDGE_HOST` (defaults to `HUE_BRIDGE_HOST` if set, else auto-discovered)
+- `ZONE_NAME` (defaults to the first zone name in `inventory.snapshot`)
+
+## Local dev
+Requirements: Python 3.12+
+
 ```sh
-curl -s -X POST http://localhost:8000/v1/actions \
-  -H 'Authorization: Bearer dev-token' \
-  -H 'Content-Type: application/json' \
-  -d '{"action":"light.set","args":{"name":"Kitchen","on":true,"brightness":30,"colorTempK":2700}}'
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+uvicorn hue_gateway.app:app --reload --port 8000
 ```
+
+Tests:
+```sh
+.venv/bin/python -m pytest -q
+```
+
+## Operator tools
+- Pairing tool: `hue-gateway-pair --help`
+- Bridge discovery: `hue-gateway-discover --help`
+
+## Ops helpers
+- Make targets: `make help`
+- Script (no executable bit required): `bash scripts/hue-gateway-ops.sh help`
+- Interactive API docs: `make docs-up` then open `http://localhost:8081`
+
+## Security notes
+- This project is **LAN-only** by design.
+- Outbound TLS verification to the Hue Bridge is **disabled** (self-signed bridge certs); do not expose the gateway publicly.
