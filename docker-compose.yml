@@ -8,6 +8,7 @@ services:
       # Required to use /v1/* and /v2/* endpoints:
       GATEWAY_AUTH_TOKENS: "dev-token"
       GATEWAY_API_KEYS: "dev-key"
+      HUE_BRIDGE_HOST: "192.168.1.23"
       # Bridge config is optional until pairing/usage:
       # HUE_BRIDGE_HOST: "192.168.1.2"
       # HUE_APPLICATION_KEY: "..."
