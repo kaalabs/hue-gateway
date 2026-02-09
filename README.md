@@ -42,6 +42,9 @@ Required for `/v1/*` and `/v2/*`:
 Bridge config (either env or one-time pairing):
 - `HUE_BRIDGE_HOST` (IP/hostname on the LAN)
 - `HUE_APPLICATION_KEY` (stored in `/data/hue-gateway.db` after pairing if not supplied via env)
+- Production host bridge IP: `192.168.1.29`
+- If unknown/changed, discover the live bridge IP first:
+  - `bash scripts/hue-gateway-ops.sh discover`
 
 Operational:
 - `CACHE_RESYNC_SECONDS` (default `300`)
@@ -58,15 +61,25 @@ Auth headers:
 - `Authorization: Bearer <token>` OR
 - `X-API-Key: <key>`
 
-1) Set bridge host:
+1) Discover bridge host on LAN (recommended):
+```sh
+bash scripts/hue-gateway-ops.sh discover
+```
+
+2) Set bridge host:
+```sh
+bash scripts/hue-gateway-ops.sh set-bridge-host 192.168.1.29
+```
+
+Alternative (direct API call):
 ```sh
 curl -s -X POST http://localhost:8000/v2/actions \
   -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
-  -d '{"action":"bridge.set_host","args":{"bridgeHost":"192.168.1.2"}}'
+  -d '{"action":"bridge.set_host","args":{"bridgeHost":"192.168.1.29"}}'
 ```
 
-2) Press the physical Hue Bridge button, then pair:
+3) Press the physical Hue Bridge button, then pair:
 ```sh
 curl -s -X POST http://localhost:8000/v2/actions \
   -H 'Authorization: Bearer dev-token' \

@@ -3,6 +3,8 @@ You are an engineer agent integrating with an already-running “Hue Gateway” 
 ## Pragmatic connection details (current environment)
 - Gateway base URL: `http://localhost:8000`
 - Interactive docs: `http://localhost:8081`
+- Hue Bridge host (production): `192.168.1.29`
+- If the bridge IP changes, scan LAN first: `bash scripts/hue-gateway-ops.sh discover`
 - Auth (either works):
   - Bearer token: `Authorization: Bearer dev-token`
   - API key: `X-API-Key: dev-key`
@@ -86,4 +88,3 @@ You are an engineer agent integrating with an already-running “Hue Gateway” 
 - Generated client/types from `http://localhost:8000/openapi.json`
 - Integration module that centralizes auth headers and wraps the actions your app needs
 - (Optional) SSE subscription helper for `/v1/events/stream` with reconnect logic
-

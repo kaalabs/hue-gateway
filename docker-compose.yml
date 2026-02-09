@@ -8,12 +8,15 @@ services:
       # Required to use /v1/* and /v2/* endpoints:
       GATEWAY_AUTH_TOKENS: "dev-token"
       GATEWAY_API_KEYS: "dev-key"
-      HUE_BRIDGE_HOST: "192.168.1.23"
+      HUE_BRIDGE_HOST: "192.168.1.29"
       # Bridge config is optional until pairing/usage:
-      # HUE_BRIDGE_HOST: "192.168.1.2"
+      # HUE_BRIDGE_HOST: "192.168.1.29"
       # HUE_APPLICATION_KEY: "..."
     networks:
       default: {}
+      remcochat_default:
+        aliases:
+          - hue-gateway
       remcochat-sandbox-net:
         aliases:
           - hue-gateway
@@ -35,6 +38,9 @@ volumes:
   hue_gateway_data:
 
 networks:
+  remcochat_default:
+    external: true
+    name: remcochat_default
   remcochat-sandbox-net:
     external: true
     name: remcochat-sandbox-net
