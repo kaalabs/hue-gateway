@@ -1,5 +1,9 @@
 # Hue Gateway
 
+> **Note:** This project has migrated from GitHub to Codeberg.
+> Canonical location: https://codeberg.org/remcokortekaas/hue-gateway
+> The GitHub location is now archived and read-only.
+
 LAN-only, dockerized API server that controls Philips Hue via a Hue Bridge (Hue CLIP v2). The API is designed for agentic tool-calling and exposes a single action endpoint.
 
 Current release: **v2.0.0**.
